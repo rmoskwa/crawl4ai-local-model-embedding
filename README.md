@@ -6,6 +6,8 @@
 
 A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
 
+**🔄 Major Update:** This implementation now uses the local BAAI-bge-large-en-v1.5 model for embeddings instead of OpenAI's embedding API, providing better privacy and eliminating API costs for embedding generation.
+
 With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
 
 The primary goal is to bring this MCP server into [Archon](https://github.com/coleam00/Archon) as I evolve it to be more of a knowledge engine for AI coding assistants to build AI agents. This first version of the Crawl4AI/RAG MCP server will be improved upon greatly soon, especially making it more configurable so you can use different embedding models and run everything locally with Ollama.
@@ -31,7 +33,7 @@ The Crawl4AI RAG MCP server is just the beginning. Here's where we're headed:
 
 1. **Integration with Archon**: Building this system directly into [Archon](https://github.com/coleam00/Archon) to create a comprehensive knowledge engine for AI coding assistants to build better AI agents.
 
-2. **Multiple Embedding Models**: Expanding beyond OpenAI to support a variety of embedding models, including the ability to run everything locally with Ollama for complete control and privacy.
+2. **Multiple Embedding Models**: ✅ **COMPLETED** - Now uses local BAAI-bge-large-en-v1.5 model instead of OpenAI, providing complete control and privacy. Future plans include support for additional local models and Ollama integration.
 
 3. **Advanced RAG Strategies**: Implementing sophisticated retrieval techniques like contextual retrieval, late chunking, and others to move beyond basic "naive lookups" and significantly enhance the power and precision of the RAG system, especially as it integrates with Archon.
 
@@ -74,7 +76,7 @@ The server provides essential web crawling and search tools:
 - [Docker/Docker Desktop](https://www.docker.com/products/docker-desktop/) if running the MCP server as a container (recommended)
 - [Python 3.12+](https://www.python.org/downloads/) if running the MCP server directly through uv
 - [Supabase](https://supabase.com/) (database for RAG)
-- [OpenAI API key](https://platform.openai.com/api-keys) (for generating embeddings) # To be changed for this project!
+- Local BAAI-bge-large-en-v1.5 model (automatically downloaded from Hugging Face)
 - [Neo4j](https://neo4j.com/) (optional, for knowledge graph functionality) - see [Knowledge Graph Setup](#knowledge-graph-setup) section
 
 ## Installation
@@ -185,11 +187,11 @@ HOST=0.0.0.0
 PORT=8051
 TRANSPORT=sse
 
-# OpenAI API Configuration
-OPENAI_API_KEY=your_openai_api_key
+# Local BGE Model Configuration (optional, will download if not specified)
+BGE_MODEL_PATH=/path/to/your/local/bge/model
 
-# LLM for summaries and contextual embeddings
-MODEL_CHOICE=gpt-4.1-nano
+# LLM for summaries and contextual embeddings (optional, features disabled without LLM)
+# MODEL_CHOICE=gpt-4.1-nano
 
 # RAG Strategies (set to "true" or "false", default to "false")
 USE_CONTEXTUAL_EMBEDDINGS=false
@@ -363,9 +365,9 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
       "args": ["path/to/crawl4ai-mcp/src/crawl4ai_mcp.py"],
       "env": {
         "TRANSPORT": "stdio",
-        "OPENAI_API_KEY": "your_openai_api_key",
         "SUPABASE_URL": "your_supabase_url",
         "SUPABASE_SERVICE_KEY": "your_supabase_service_key",
+        "BGE_MODEL_PATH": "/path/to/your/local/bge/model",
         "USE_KNOWLEDGE_GRAPH": "false",
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
@@ -385,9 +387,9 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
       "command": "docker",
       "args": ["run", "--rm", "-i", 
                "-e", "TRANSPORT", 
-               "-e", "OPENAI_API_KEY", 
                "-e", "SUPABASE_URL", 
                "-e", "SUPABASE_SERVICE_KEY",
+               "-e", "BGE_MODEL_PATH",
                "-e", "USE_KNOWLEDGE_GRAPH",
                "-e", "NEO4J_URI",
                "-e", "NEO4J_USER",
@@ -395,9 +397,9 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
                "mcp/crawl4ai"],
       "env": {
         "TRANSPORT": "stdio",
-        "OPENAI_API_KEY": "your_openai_api_key",
         "SUPABASE_URL": "your_supabase_url",
         "SUPABASE_SERVICE_KEY": "your_supabase_service_key",
+        "BGE_MODEL_PATH": "/path/to/your/local/bge/model",
         "USE_KNOWLEDGE_GRAPH": "false",
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",

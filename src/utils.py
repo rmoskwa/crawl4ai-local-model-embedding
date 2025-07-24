@@ -7,12 +7,9 @@ from typing import List, Dict, Any, Optional, Tuple
 import json
 from supabase import create_client, Client
 from urllib.parse import urlparse
-import openai
 import re
 import time
-
-# Load OpenAI API key for embeddings
-openai.api_key = os.getenv("OPENAI_API_KEY")
+from local_embeddings import create_embedding, create_embeddings_batch
 
 def get_supabase_client() -> Client:
     """
@@ -29,75 +26,7 @@ def get_supabase_client() -> Client:
     
     return create_client(url, key)
 
-def create_embeddings_batch(texts: List[str]) -> List[List[float]]:
-    """
-    Create embeddings for multiple texts in a single API call.
-    
-    Args:
-        texts: List of texts to create embeddings for
-        
-    Returns:
-        List of embeddings (each embedding is a list of floats)
-    """
-    if not texts:
-        return []
-    
-    max_retries = 3
-    retry_delay = 1.0  # Start with 1 second delay
-    
-    for retry in range(max_retries):
-        try:
-            response = openai.embeddings.create(
-                model="text-embedding-3-small", # Hardcoding embedding model for now, will change this later to be more dynamic
-                input=texts
-            )
-            return [item.embedding for item in response.data]
-        except Exception as e:
-            if retry < max_retries - 1:
-                print(f"Error creating batch embeddings (attempt {retry + 1}/{max_retries}): {e}")
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-            else:
-                print(f"Failed to create batch embeddings after {max_retries} attempts: {e}")
-                # Try creating embeddings one by one as fallback
-                print("Attempting to create embeddings individually...")
-                embeddings = []
-                successful_count = 0
-                
-                for i, text in enumerate(texts):
-                    try:
-                        individual_response = openai.embeddings.create(
-                            model="text-embedding-3-small",
-                            input=[text]
-                        )
-                        embeddings.append(individual_response.data[0].embedding)
-                        successful_count += 1
-                    except Exception as individual_error:
-                        print(f"Failed to create embedding for text {i}: {individual_error}")
-                        # Add zero embedding as fallback
-                        embeddings.append([0.0] * 1536)
-                
-                print(f"Successfully created {successful_count}/{len(texts)} embeddings individually")
-                return embeddings
 
-def create_embedding(text: str) -> List[float]:
-    """
-    Create an embedding for a single text using OpenAI's API.
-    
-    Args:
-        text: Text to create an embedding for
-        
-    Returns:
-        List of floats representing the embedding
-    """
-    try:
-        embeddings = create_embeddings_batch([text])
-        return embeddings[0] if embeddings else [0.0] * 1536
-    except Exception as e:
-        print(f"Error creating embedding: {e}")
-        # Return empty embedding if there's an error
-        return [0.0] * 1536
 
 def generate_contextual_embedding(full_document: str, chunk: str) -> Tuple[str, bool]:
     """
@@ -125,25 +54,11 @@ Here is the chunk we want to situate within the whole document
 </chunk> 
 Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else."""
 
-        # Call the OpenAI API to generate contextual information
-        response = openai.chat.completions.create(
-            model=model_choice,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that provides concise contextual information."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=200
-        )
+        # TODO: Replace with local LLM for contextual embeddings
+        # For now, skip contextual embeddings when OpenAI is not available
+        print("Contextual embeddings require LLM integration - using original chunk")
+        return chunk, False
         
-        # Extract the generated context
-        context = response.choices[0].message.content.strip()
-        
-        # Combine the context with the original chunk
-        contextual_text = f"{context}\n---\n{chunk}"
-        
-        return contextual_text, True
-    
     except Exception as e:
         print(f"Error generating contextual embedding: {e}. Using original chunk instead.")
         return chunk, False
@@ -468,17 +383,10 @@ Based on the code example and its surrounding context, provide a concise summary
 """
     
     try:
-        response = openai.chat.completions.create(
-            model=model_choice,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that provides concise code example summaries."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=100
-        )
-        
-        return response.choices[0].message.content.strip()
+        # TODO: Replace with local LLM for code summaries
+        # For now, return a generic summary
+        print("Code example summary generation requires LLM integration - using generic summary")
+        return "Code example for demonstration purposes."
     
     except Exception as e:
         print(f"Error generating code example summary: {e}")
@@ -662,25 +570,10 @@ The above content is from the documentation for '{source_id}'. Please provide a 
 """
     
     try:
-        # Call the OpenAI API to generate the summary
-        response = openai.chat.completions.create(
-            model=model_choice,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that provides concise library/tool/framework summaries."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=150
-        )
-        
-        # Extract the generated summary
-        summary = response.choices[0].message.content.strip()
-        
-        # Ensure the summary is not too long
-        if len(summary) > max_length:
-            summary = summary[:max_length] + "..."
-            
-        return summary
+        # TODO: Replace with local LLM for source summaries
+        # For now, return a generic summary based on source_id
+        print(f"Source summary generation requires LLM integration - using generic summary for {source_id}")
+        return f"Documentation and content from {source_id}"
     
     except Exception as e:
         print(f"Error generating summary with LLM for {source_id}: {e}. Using default summary.")

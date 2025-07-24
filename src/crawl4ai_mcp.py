@@ -42,11 +42,11 @@ from utils import (
     search_code_examples
 )
 
-# Import knowledge graph modules
-from knowledge_graph_validator import KnowledgeGraphValidator
-from parse_repo_into_neo4j import DirectNeo4jExtractor
-from ai_script_analyzer import AIScriptAnalyzer
-from hallucination_reporter import HallucinationReporter
+# Import knowledge graph modules (commented out - not used for now)
+# from knowledge_graph_validator import KnowledgeGraphValidator
+# from parse_repo_into_neo4j import DirectNeo4jExtractor
+# from ai_script_analyzer import AIScriptAnalyzer
+# from hallucination_reporter import HallucinationReporter
 
 # Load environment variables from the project root .env file
 project_root = Path(__file__).resolve().parent.parent
@@ -55,9 +55,10 @@ dotenv_path = project_root / '.env'
 # Force override of existing environment variables
 load_dotenv(dotenv_path, override=True)
 
-# Helper functions for Neo4j validation and error handling
+# Helper functions for Neo4j validation and error handling (commented out - knowledge graphs not used for now)
+"""
 def validate_neo4j_connection() -> bool:
-    """Check if Neo4j environment variables are configured."""
+    #Check if Neo4j environment variables are configured.
     return all([
         os.getenv("NEO4J_URI"),
         os.getenv("NEO4J_USER"),
@@ -65,7 +66,7 @@ def validate_neo4j_connection() -> bool:
     ])
 
 def format_neo4j_error(error: Exception) -> str:
-    """Format Neo4j connection errors for user-friendly messages."""
+    #Format Neo4j connection errors for user-friendly messages.
     error_str = str(error).lower()
     if "authentication" in error_str or "unauthorized" in error_str:
         return "Neo4j authentication failed. Check NEO4J_USER and NEO4J_PASSWORD."
@@ -77,7 +78,7 @@ def format_neo4j_error(error: Exception) -> str:
         return f"Neo4j error: {str(error)}"
 
 def validate_script_path(script_path: str) -> Dict[str, Any]:
-    """Validate script path and return error info if invalid."""
+    #Validate script path and return error info if invalid.
     if not script_path or not isinstance(script_path, str):
         return {"valid": False, "error": "Script path is required"}
     
@@ -96,7 +97,7 @@ def validate_script_path(script_path: str) -> Dict[str, Any]:
         return {"valid": False, "error": f"Cannot read script file: {str(e)}"}
 
 def validate_github_url(repo_url: str) -> Dict[str, Any]:
-    """Validate GitHub repository URL."""
+    #Validate GitHub repository URL.
     if not repo_url or not isinstance(repo_url, str):
         return {"valid": False, "error": "Repository URL is required"}
     
@@ -111,6 +112,7 @@ def validate_github_url(repo_url: str) -> Dict[str, Any]:
         return {"valid": False, "error": "Repository URL must start with https:// or git@"}
     
     return {"valid": True, "repo_name": repo_url.split('/')[-1].replace('.git', '')}
+"""
 
 # Create a dataclass for our application context
 @dataclass
@@ -119,8 +121,9 @@ class Crawl4AIContext:
     crawler: AsyncWebCrawler
     supabase_client: Client
     reranking_model: Optional[CrossEncoder] = None
-    knowledge_validator: Optional[Any] = None  # KnowledgeGraphValidator when available
-    repo_extractor: Optional[Any] = None       # DirectNeo4jExtractor when available
+    # Knowledge graph components (commented out - not used for now)
+    # knowledge_validator: Optional[Any] = None  # KnowledgeGraphValidator when available
+    # repo_extractor: Optional[Any] = None       # DirectNeo4jExtractor when available
 
 @asynccontextmanager
 async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
@@ -155,64 +158,66 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
             print(f"Failed to load reranking model: {e}")
             reranking_model = None
     
-    # Initialize Neo4j components if configured and enabled
-    knowledge_validator = None
-    repo_extractor = None
+    # Initialize Neo4j components if configured and enabled (commented out - not used for now)
+    # knowledge_validator = None
+    # repo_extractor = None
     
-    # Check if knowledge graph functionality is enabled
-    knowledge_graph_enabled = os.getenv("USE_KNOWLEDGE_GRAPH", "false") == "true"
+    # # Check if knowledge graph functionality is enabled
+    # knowledge_graph_enabled = os.getenv("USE_KNOWLEDGE_GRAPH", "false") == "true"
     
-    if knowledge_graph_enabled:
-        neo4j_uri = os.getenv("NEO4J_URI")
-        neo4j_user = os.getenv("NEO4J_USER")
-        neo4j_password = os.getenv("NEO4J_PASSWORD")
+    # if knowledge_graph_enabled:
+    #     neo4j_uri = os.getenv("NEO4J_URI")
+    #     neo4j_user = os.getenv("NEO4J_USER")
+    #     neo4j_password = os.getenv("NEO4J_PASSWORD")
         
-        if neo4j_uri and neo4j_user and neo4j_password:
-            try:
-                print("Initializing knowledge graph components...")
+    #     if neo4j_uri and neo4j_user and neo4j_password:
+    #         try:
+    #             print("Initializing knowledge graph components...")
                 
-                # Initialize knowledge graph validator
-                knowledge_validator = KnowledgeGraphValidator(neo4j_uri, neo4j_user, neo4j_password)
-                await knowledge_validator.initialize()
-                print("✓ Knowledge graph validator initialized")
+    #             # Initialize knowledge graph validator
+    #             knowledge_validator = KnowledgeGraphValidator(neo4j_uri, neo4j_user, neo4j_password)
+    #             await knowledge_validator.initialize()
+    #             print("✓ Knowledge graph validator initialized")
                 
-                # Initialize repository extractor
-                repo_extractor = DirectNeo4jExtractor(neo4j_uri, neo4j_user, neo4j_password)
-                await repo_extractor.initialize()
-                print("✓ Repository extractor initialized")
+    #             # Initialize repository extractor
+    #             repo_extractor = DirectNeo4jExtractor(neo4j_uri, neo4j_user, neo4j_password)
+    #             await repo_extractor.initialize()
+    #             print("✓ Repository extractor initialized")
                 
-            except Exception as e:
-                print(f"Failed to initialize Neo4j components: {format_neo4j_error(e)}")
-                knowledge_validator = None
-                repo_extractor = None
-        else:
-            print("Neo4j credentials not configured - knowledge graph tools will be unavailable")
-    else:
-        print("Knowledge graph functionality disabled - set USE_KNOWLEDGE_GRAPH=true to enable")
+    #         except Exception as e:
+    #             print(f"Failed to initialize Neo4j components: {format_neo4j_error(e)}")
+    #             knowledge_validator = None
+    #             repo_extractor = None
+    #     else:
+    #         print("Neo4j credentials not configured - knowledge graph tools will be unavailable")
+    # else:
+    #     print("Knowledge graph functionality disabled - set USE_KNOWLEDGE_GRAPH=true to enable")
     
     try:
         yield Crawl4AIContext(
             crawler=crawler,
             supabase_client=supabase_client,
             reranking_model=reranking_model,
-            knowledge_validator=knowledge_validator,
-            repo_extractor=repo_extractor
+            # Knowledge graph components commented out
+            # knowledge_validator=knowledge_validator,
+            # repo_extractor=repo_extractor
         )
     finally:
         # Clean up all components
         await crawler.__aexit__(None, None, None)
-        if knowledge_validator:
-            try:
-                await knowledge_validator.close()
-                print("✓ Knowledge graph validator closed")
-            except Exception as e:
-                print(f"Error closing knowledge validator: {e}")
-        if repo_extractor:
-            try:
-                await repo_extractor.close()
-                print("✓ Repository extractor closed")
-            except Exception as e:
-                print(f"Error closing repository extractor: {e}")
+        # Knowledge graph cleanup commented out
+        # if knowledge_validator:
+        #     try:
+        #         await knowledge_validator.close()
+        #         print("✓ Knowledge graph validator closed")
+        #     except Exception as e:
+        #         print(f"Error closing knowledge validator: {e}")
+        # if repo_extractor:
+        #     try:
+        #         await repo_extractor.close()
+        #         print("✓ Repository extractor closed")
+        #     except Exception as e:
+        #         print(f"Error closing repository extractor: {e}")
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -1068,6 +1073,8 @@ async def search_code_examples(ctx: Context, query: str, source_id: str = None, 
             "error": str(e)
         }, indent=2)
 
+# KNOWLEDGE GRAPH FUNCTIONS COMMENTED OUT - NOT USED FOR NOW
+"""
 @mcp.tool()
 async def check_ai_script_hallucinations(ctx: Context, script_path: str) -> str:
     """
@@ -1747,6 +1754,8 @@ async def parse_github_repository(ctx: Context, repo_url: str) -> str:
             "repo_url": repo_url,
             "error": f"Repository parsing failed: {str(e)}"
         }, indent=2)
+"""
+# END OF KNOWLEDGE GRAPH FUNCTIONS
 
 async def crawl_markdown_file(crawler: AsyncWebCrawler, url: str) -> List[Dict[str, Any]]:
     """

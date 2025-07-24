@@ -17,7 +17,6 @@ The server includes several advanced RAG strategies that can be enabled to enhan
 - **Hybrid Search** combining vector and keyword search
 - **Agentic RAG** for specialized code example extraction
 - **Reranking** for improved result relevance using cross-encoder models
-- **Knowledge Graph** for AI hallucination detection and repository code analysis
 
 See the [Configuration section](#configuration) below for details on how to enable and configure these strategies.
 
@@ -45,18 +44,12 @@ The server provides essential web crawling and search tools:
 
 5. **`search_code_examples`** (requires `USE_AGENTIC_RAG=true`): Search specifically for code examples and their summaries from crawled documentation. This tool provides targeted code snippet retrieval for AI coding assistants.
 
-### Knowledge Graph Tools (requires `USE_KNOWLEDGE_GRAPH=true`, see below)
-
-6. **`parse_github_repository`**: Parse a GitHub repository into a Neo4j knowledge graph, extracting classes, methods, functions, and their relationships for hallucination detection
-7. **`check_ai_script_hallucinations`**: Analyze Python scripts for AI hallucinations by validating imports, method calls, and class usage against the knowledge graph
-8. **`query_knowledge_graph`**: Explore and query the Neo4j knowledge graph with commands like `repos`, `classes`, `methods`, and custom Cypher queries
 
 ## Prerequisites
 
 - [Docker/Docker Desktop](https://www.docker.com/products/docker-desktop/) if running the MCP server as a container (recommended)
 - [Python 3.12+](https://www.python.org/downloads/) if running the MCP server directly through uv
 - [Supabase](https://supabase.com/) (database for RAG)
-- [Neo4j](https://neo4j.com/) (optional, for knowledge graph functionality) - see [Knowledge Graph Setup](#knowledge-graph-setup) section
 
 ## Installation
 
@@ -113,49 +106,6 @@ Before running the server, you need to set up the database with the pgvector ext
 
 3. Run the query to create the necessary tables and functions
 
-## Knowledge Graph Setup (Optional)
-
-To enable AI hallucination detection and repository analysis features, you need to set up Neo4j.
-
-Also, the knowledge graph implementation isn't fully compatible with Docker yet, so I would recommend right now running directly through uv if you want to use the hallucination detection within the MCP server!
-
-For installing Neo4j:
-
-### Local AI Package (Recommended)
-
-The easiest way to get Neo4j running locally is with the [Local AI Package](https://github.com/coleam00/local-ai-packaged) - a curated collection of local AI services including Neo4j:
-
-1. **Clone the Local AI Package**:
-   ```bash
-   git clone https://github.com/coleam00/local-ai-packaged.git
-   cd local-ai-packaged
-   ```
-
-2. **Start Neo4j**:
-   Follow the instructions in the Local AI Package repository to start Neo4j with Docker Compose
-
-3. **Default connection details**:
-   - URI: `bolt://localhost:7687`
-   - Username: `neo4j`
-   - Password: Check the Local AI Package documentation for the default password
-
-### Manual Neo4j Installation
-
-Alternatively, install Neo4j directly:
-
-1. **Install Neo4j Desktop**: Download from [neo4j.com/download](https://neo4j.com/download/)
-
-2. **Create a new database**:
-   - Open Neo4j Desktop
-   - Create a new project and database
-   - Set a password for the `neo4j` user
-   - Start the database
-
-3. **Note your connection details**:
-   - URI: `bolt://localhost:7687` (default)
-   - Username: `neo4j` (default)
-   - Password: Whatever you set during creation
-
 ## Configuration
 
 Create a `.env` file in the project root with the following variables:
@@ -182,11 +132,6 @@ USE_KNOWLEDGE_GRAPH=false
 # Supabase Configuration
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_KEY=your_supabase_service_key
-
-# Neo4j Configuration (required for knowledge graph functionality)
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=your_neo4j_password
 ```
 
 ### RAG Strategy Options
@@ -223,26 +168,6 @@ Applies cross-encoder reranking to search results after initial retrieval. Uses 
 - **Cost**: No additional API costs - uses a local model that runs on CPU.
 - **Benefits**: Better result relevance, especially for complex queries. Works with both regular RAG search and code example search.
 
-#### 5. **USE_KNOWLEDGE_GRAPH**
-Enables AI hallucination detection and repository analysis using Neo4j knowledge graphs. When enabled, the system can parse GitHub repositories into a graph database and validate AI-generated code against real repository structures. (NOT fully compatible with Docker yet, I'd recommend running through uv)
-
-- **When to use**: Enable this for AI coding assistants that need to validate generated code against real implementations, or when you want to detect when AI models hallucinate non-existent methods, classes, or incorrect usage patterns.
-- **Trade-offs**: Requires Neo4j setup and additional dependencies. Repository parsing can be slow for large codebases, and validation requires repositories to be pre-indexed.
-- **Cost**: No additional API costs for validation, but requires Neo4j infrastructure (can use free local installation or cloud AuraDB).
-- **Benefits**: Provides three powerful tools: `parse_github_repository` for indexing codebases, `check_ai_script_hallucinations` for validating AI-generated code, and `query_knowledge_graph` for exploring indexed repositories.
-
-You can now tell the AI coding assistant to add a Python GitHub repository to the knowledge graph like:
-
-"Add https://github.com/pydantic/pydantic-ai.git to the knowledge graph"
-
-Make sure the repo URL ends with .git.
-
-You can also have the AI coding assistant check for hallucinations with scripts it just created, or you can manually run the command:
-
-```
-python knowledge_graphs/ai_hallucination_detector.py [full path to your script to analyze]
-```
-
 ### Recommended Configurations
 
 **For general documentation RAG:**
@@ -259,16 +184,6 @@ USE_CONTEXTUAL_EMBEDDINGS=true
 USE_HYBRID_SEARCH=true
 USE_AGENTIC_RAG=true
 USE_RERANKING=true
-USE_KNOWLEDGE_GRAPH=false
-```
-
-**For AI coding assistant with hallucination detection:**
-```
-USE_CONTEXTUAL_EMBEDDINGS=true
-USE_HYBRID_SEARCH=true
-USE_AGENTIC_RAG=true
-USE_RERANKING=true
-USE_KNOWLEDGE_GRAPH=true
 ```
 
 **For fast, basic RAG:**
@@ -277,7 +192,6 @@ USE_CONTEXTUAL_EMBEDDINGS=false
 USE_HYBRID_SEARCH=true
 USE_AGENTIC_RAG=false
 USE_RERANKING=false
-USE_KNOWLEDGE_GRAPH=false
 ```
 
 ## Running the Server
@@ -389,39 +303,6 @@ Add this server to your MCP configuration for Claude Desktop, Windsurf, or any o
 }
 ```
 
-## Knowledge Graph Architecture
 
-The knowledge graph system stores repository code structure in Neo4j with the following components:
 
-### Core Components (`knowledge_graphs/` folder):
 
-- **`parse_repo_into_neo4j.py`**: Clones and analyzes GitHub repositories, extracting Python classes, methods, functions, and imports into Neo4j nodes and relationships
-- **`ai_script_analyzer.py`**: Parses Python scripts using AST to extract imports, class instantiations, method calls, and function usage
-- **`knowledge_graph_validator.py`**: Validates AI-generated code against the knowledge graph to detect hallucinations (non-existent methods, incorrect parameters, etc.)
-- **`hallucination_reporter.py`**: Generates comprehensive reports about detected hallucinations with confidence scores and recommendations
-- **`query_knowledge_graph.py`**: Interactive CLI tool for exploring the knowledge graph (functionality now integrated into MCP tools)
-
-### Knowledge Graph Schema:
-
-The Neo4j database stores code structure as:
-
-**Nodes:**
-- `Repository`: GitHub repositories
-- `File`: Python files within repositories  
-- `Class`: Python classes with methods and attributes
-- `Method`: Class methods with parameter information
-- `Function`: Standalone functions
-- `Attribute`: Class attributes
-
-**Relationships:**
-- `Repository` -[:CONTAINS]-> `File`
-- `File` -[:DEFINES]-> `Class`
-- `File` -[:DEFINES]-> `Function`
-- `Class` -[:HAS_METHOD]-> `Method`
-- `Class` -[:HAS_ATTRIBUTE]-> `Attribute`
-
-### Workflow:
-
-1. **Repository Parsing**: Use `parse_github_repository` tool to clone and analyze open-source repositories
-2. **Code Validation**: Use `check_ai_script_hallucinations` tool to validate AI-generated Python scripts
-3. **Knowledge Exploration**: Use `query_knowledge_graph` tool to explore available repositories, classes, and methods

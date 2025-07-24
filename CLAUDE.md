@@ -26,7 +26,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Local Embeddings (`src/local_embeddings.py`)**
 - BAAI-bge-large-en-v1.5 model integration 
 - Generates 1024-dimensional embeddings with proper BGE preprocessing (mean pooling, normalization)
-- Loads exclusively from local model path (no downloads), requires BGE_MODEL_PATH environment variable
+- Loads exclusively from Docker container path, requires BGE_MODEL_PATH environment variable
 - Singleton service pattern with batch processing support
 
 **Utilities (`src/utils.py`)**  
@@ -76,5 +76,5 @@ Neo4j schema: (Commented out - knowledge graph functionality not currently used)
 The codebase migrated from OpenAI embeddings to local BAAI-bge-large-en-v1.5 model. When modifying embedding functionality:
 - Use `local_embeddings.py` service, not direct transformers calls
 - Embeddings are 1024-dimensional (not OpenAI's 1536)
-- Model must be pre-installed locally at `BGE_MODEL_PATH` (no automatic downloads)
+- Model is automatically downloaded during Docker build and available at `BGE_MODEL_PATH`
 - GPU acceleration available if CUDA present

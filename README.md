@@ -1,22 +1,16 @@
-<h1 align="center">Crawl4AI RAG MCP Server</h1>
+<h1 align="center">Crawl4AI RAG MCP Server With Local Embeddings</h1>
 
 <p align="center">
   <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
 </p>
 
-A powerful implementation of the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) integrated with [Crawl4AI](https://crawl4ai.com) and [Supabase](https://supabase.com/) for providing AI agents and AI coding assistants with advanced web crawling and RAG capabilities.
-
-**🔄 Major Update:** This implementation now uses the local BAAI-bge-large-en-v1.5 model for embeddings instead of OpenAI's embedding API, providing better privacy and eliminating API costs for embedding generation.
+A fork of [Crawl4AI](https://github.com/coleam00/mcp-crawl4ai-rag/tree/main). This implementation uses the local BAAI-bge-large-en-v1.5 model for embeddings (1024 dimensions) instead of OpenAI's embedding API, providing better privacy and eliminating API costs for embedding generation. Currently, this implementation is using Gemini-1.5-flash, which has a generous free tier. 
 
 With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
 
-The primary goal is to bring this MCP server into [Archon](https://github.com/coleam00/Archon) as I evolve it to be more of a knowledge engine for AI coding assistants to build AI agents. This first version of the Crawl4AI/RAG MCP server will be improved upon greatly soon, especially making it more configurable so you can use different embedding models and run everything locally with Ollama.
-
-Consider this GitHub repository a testbed, hence why I haven't been super actively address issues and pull requests yet. I certainly will though as I bring this into Archon V2!
-
 ## Overview
 
-This MCP server provides tools that enable AI agents to crawl websites, store content in a vector database (Supabase), and perform RAG over the crawled content. It follows the best practices for building MCP servers based on the [Mem0 MCP server template](https://github.com/coleam00/mcp-mem0/) I provided on my channel previously.
+This MCP server provides tools that enable AI agents to crawl websites, store content in a vector database (Supabase), and perform RAG over the crawled content. It follows the best practices for building MCP servers based on the [Mem0 MCP server template](https://github.com/coleam00/mcp-mem0/).
 
 The server includes several advanced RAG strategies that can be enabled to enhance retrieval quality:
 - **Contextual Embeddings** for enriched semantic understanding
@@ -26,20 +20,6 @@ The server includes several advanced RAG strategies that can be enabled to enhan
 - **Knowledge Graph** for AI hallucination detection and repository code analysis
 
 See the [Configuration section](#configuration) below for details on how to enable and configure these strategies.
-
-## Vision
-
-The Crawl4AI RAG MCP server is just the beginning. Here's where we're headed:
-
-1. **Integration with Archon**: Building this system directly into [Archon](https://github.com/coleam00/Archon) to create a comprehensive knowledge engine for AI coding assistants to build better AI agents.
-
-2. **Multiple Embedding Models**: ✅ **COMPLETED** - Now uses local BAAI-bge-large-en-v1.5 model instead of OpenAI, providing complete control and privacy. Future plans include support for additional local models and Ollama integration.
-
-3. **Advanced RAG Strategies**: Implementing sophisticated retrieval techniques like contextual retrieval, late chunking, and others to move beyond basic "naive lookups" and significantly enhance the power and precision of the RAG system, especially as it integrates with Archon.
-
-4. **Enhanced Chunking Strategy**: Implementing a Context 7-inspired chunking approach that focuses on examples and creates distinct, semantically meaningful sections for each chunk, improving retrieval precision.
-
-5. **Performance Optimization**: Increasing crawling and indexing speed to make it more realistic to "quickly" index new documentation to then leverage it within the same prompt in an AI coding assistant.
 
 ## Features
 
@@ -76,7 +56,6 @@ The server provides essential web crawling and search tools:
 - [Docker/Docker Desktop](https://www.docker.com/products/docker-desktop/) if running the MCP server as a container (recommended)
 - [Python 3.12+](https://www.python.org/downloads/) if running the MCP server directly through uv
 - [Supabase](https://supabase.com/) (database for RAG)
-- Local BAAI-bge-large-en-v1.5 model (automatically downloaded from Hugging Face)
 - [Neo4j](https://neo4j.com/) (optional, for knowledge graph functionality) - see [Knowledge Graph Setup](#knowledge-graph-setup) section
 
 ## Installation
@@ -187,11 +166,11 @@ HOST=0.0.0.0
 PORT=8051
 TRANSPORT=sse
 
-# Local BGE Model Configuration (optional, will download if not specified)
-BGE_MODEL_PATH=/path/to/your/local/bge/model
+# Local BGE Model Configuration (currently points to path within Docker)
+BGE_MODEL_PATH=/app/models/models--BAAI--bge-large-en-v1.5/snapshots
 
 # LLM for summaries and contextual embeddings (optional, features disabled without LLM)
-# MODEL_CHOICE=gpt-4.1-nano
+# MODEL_CHOICE=gemini-1.5-flash-latest
 
 # RAG Strategies (set to "true" or "false", default to "false")
 USE_CONTEXTUAL_EMBEDDINGS=false
@@ -446,12 +425,3 @@ The Neo4j database stores code structure as:
 1. **Repository Parsing**: Use `parse_github_repository` tool to clone and analyze open-source repositories
 2. **Code Validation**: Use `check_ai_script_hallucinations` tool to validate AI-generated Python scripts
 3. **Knowledge Exploration**: Use `query_knowledge_graph` tool to explore available repositories, classes, and methods
-
-## Building Your Own Server
-
-This implementation provides a foundation for building more complex MCP servers with web crawling capabilities. To build your own:
-
-1. Add your own tools by creating methods with the `@mcp.tool()` decorator
-2. Create your own lifespan function to add your own dependencies
-3. Modify the `utils.py` file for any helper functions you need
-4. Extend the crawling capabilities by adding more specialized crawlers

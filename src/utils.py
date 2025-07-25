@@ -454,7 +454,7 @@ def detect_primary_language(code_blocks: List[Dict[str, Any]]) -> str:
 
 def create_combined_code_block(markdown_content: str, code_blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Combine all code blocks into one seamless block with educational text as context.
+    Combine all code blocks into one seamless block with surrounding text as context.
     
     Args:
         markdown_content: Original markdown content
@@ -466,7 +466,7 @@ def create_combined_code_block(markdown_content: str, code_blocks: List[Dict[str
     # Combine all code with simple spacing
     combined_code = "\n\n".join(block["code"] for block in code_blocks)
     
-    # Extract all non-code text as educational context
+    # Extract all non-code text as context
     text_context = extract_text_between_code_blocks(markdown_content, code_blocks)
     
     # Detect primary language
@@ -535,7 +535,7 @@ def extract_text_between_code_blocks(markdown_content: str, code_blocks: List[Di
 
 
 def generate_code_example_summary(
-    code: str, context_before: str, context_after: str, is_educational: bool = False
+    code: str, context_before: str, context_after: str, is_code_dominated: bool = False
 ) -> str:
     """
     Generate a summary for a code example using its surrounding context.
@@ -544,7 +544,7 @@ def generate_code_example_summary(
         code: The code example
         context_before: Context before the code
         context_after: Context after the code
-        is_educational: Whether this is educational content (increases context limit)
+        is_code_dominated: Whether this is code-dominated content (increases context limit)
 
     Returns:
         A summary of what the code example demonstrates
@@ -560,7 +560,7 @@ def generate_code_example_summary(
         return "Code example for demonstration purposes."
 
     # Dynamic context limits based on content type
-    context_limit = 2000 if is_educational else 500
+    context_limit = 2000 if is_code_dominated else 500
     
     # Truncate context_before based on content type
     context_before_truncated = (
@@ -568,12 +568,12 @@ def generate_code_example_summary(
         else context_before
     )
     
-    # For educational content, don't truncate code; for regular content, apply existing limit
-    code_content = code if is_educational else (code[:1500] if len(code) > 1500 else code)
+    # For code-dominated content, don't truncate code; for regular content, apply existing limit
+    code_content = code if is_code_dominated else (code[:1500] if len(code) > 1500 else code)
     
     # Create the prompt with appropriate instructions for content type
-    if is_educational:
-        instruction = "Based on the educational context and complete code tutorial, provide a comprehensive summary (3-4 sentences) that describes the overall educational goal, key concepts demonstrated, and practical application. Focus on the learning objectives rather than individual code snippets."
+    if is_code_dominated:
+        instruction = "Based on the code-dominated context and complete code tutorial, provide a comprehensive summary (3-4 sentences) that describes the overall goal, key concepts demonstrated, and practical application. Focus on the learning objectives rather than individual code snippets."
     else:
         instruction = "Based on the code example and its surrounding context, provide a concise summary (2-3 sentences) that describes what this code example demonstrates and its purpose. Focus on the practical application and key concepts illustrated."
     

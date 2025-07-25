@@ -286,14 +286,14 @@ def process_code_example(args):
     This function is designed to be used with concurrent.futures.
 
     Args:
-        args: Tuple containing (code, context_before, context_after, is_educational)
+        args: Tuple containing (code, context_before, context_after, is_code_dominated)
 
     Returns:
         The generated summary
     """
     if len(args) == 4:
-        code, context_before, context_after, is_educational = args
-        return generate_code_example_summary(code, context_before, context_after, is_educational)
+        code, context_before, context_after, is_code_dominated = args
+        return generate_code_example_summary(code, context_before, context_after, is_code_dominated)
     else:
         # Backward compatibility
         code, context_before, context_after = args
@@ -384,9 +384,11 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                 # Analyze content distribution to determine processing approach
                 code_dominance_threshold = float(os.getenv("CODE_DOMINANCE_THRESHOLD", "0.4"))
                 content_analysis = analyze_content_distribution(result.markdown)
-                is_educational = content_analysis["code_percentage"] >= code_dominance_threshold
+                is_code_dominated = content_analysis["code_percentage"] >= code_dominance_threshold
                 
-                code_blocks = extract_code_blocks(result.markdown)
+                # Extract code blocks with appropriate min_length based on content type
+                min_length = 0 if is_code_dominated else 1000
+                code_blocks = extract_code_blocks(result.markdown, min_length=min_length)
                 if code_blocks:
                     code_urls = []
                     code_chunk_numbers = []
@@ -394,8 +396,8 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                     code_summaries = []
                     code_metadatas = []
 
-                    if is_educational:
-                        # Educational content: combine all code blocks into one
+                    if is_code_dominated:
+                        # Code-dominated content: combine all code blocks into one
                         combined_block = create_combined_code_block(result.markdown, code_blocks)
                         
                         # Generate summary for combined block
@@ -403,7 +405,7 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                             combined_block["code"],
                             combined_block["context_before"],
                             combined_block["context_after"],
-                            is_educational=True
+                            is_code_dominated=True
                         )
                         
                         # Prepare single combined entry
@@ -434,7 +436,7 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                                     block["code"],
                                     block["context_before"],
                                     block["context_after"],
-                                    False  # is_educational
+                                    False  # is_code_dominated
                                 )
                                 for block in code_blocks
                             ]
@@ -659,16 +661,18 @@ async def smart_crawl_url(
                 
                 # Analyze content distribution to determine processing approach
                 content_analysis = analyze_content_distribution(md)
-                is_educational = content_analysis["code_percentage"] >= code_dominance_threshold
+                is_code_dominated = content_analysis["code_percentage"] >= code_dominance_threshold
                 
-                code_blocks = extract_code_blocks(md)
+                # Extract code blocks with appropriate min_length based on content type
+                min_length = 0 if is_code_dominated else 1000
+                code_blocks = extract_code_blocks(md, min_length=min_length)
 
                 if code_blocks:
                     parsed_url = urlparse(source_url)
                     source_id = parsed_url.netloc or parsed_url.path
                     
-                    if is_educational:
-                        # Educational content: combine all code blocks into one
+                    if is_code_dominated:
+                        # Code-dominated content: combine all code blocks into one
                         combined_block = create_combined_code_block(md, code_blocks)
                         
                         # Generate summary for combined block
@@ -676,7 +680,7 @@ async def smart_crawl_url(
                             combined_block["code"],
                             combined_block["context_before"],
                             combined_block["context_after"],
-                            is_educational=True
+                            is_code_dominated=True
                         )
                         
                         # Prepare single combined entry
@@ -707,7 +711,7 @@ async def smart_crawl_url(
                                     block["code"],
                                     block["context_before"],
                                     block["context_after"],
-                                    False  # is_educational
+                                    False  # is_code_dominated
                                 )
                                 for block in code_blocks
                             ]

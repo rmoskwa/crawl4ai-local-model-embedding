@@ -32,7 +32,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Utilities (`src/utils.py`)**  
 - Supabase integration for vector storage and search
 - Content chunking with smart markdown splitting
-- Code block extraction and contextual embedding processing
+- Adaptive code block processing with educational content detection
+- Combined code tutorial generation for code-heavy educational pages
+- Language detection and contextual embedding processing
 - Hybrid search combining vector similarity and keyword matching
 
 **Knowledge Graph System (`knowledge_graphs/`) - COMMENTED OUT**
@@ -42,12 +44,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Data Flow Architecture
 
-1. **Crawling**: Web content → Crawl4AI → Chunking → Local BGE embeddings → Supabase vector storage
+1. **Crawling**: Web content → Crawl4AI → Content analysis → Adaptive processing → Local BGE embeddings → Supabase vector storage
+   - **Educational pages (≥40% code)**: All code blocks combined into single tutorial with educational context
+   - **Regular pages (<40% code)**: Individual code blocks processed separately with surrounding context
 2. **RAG Search**: Query → BGE embedding → Vector similarity + optional keyword search → Optional reranking → Results
 
 ### Key Design Patterns
 
-**Conditional Feature Loading**: Tools and functionality enabled via environment flags (USE_RERANKING, USE_AGENTIC_RAG, USE_HYBRID_SEARCH, USE_CONTEXTUAL_EMBEDDINGS). Note: USE_KNOWLEDGE_GRAPH is commented out.
+**Conditional Feature Loading**: Tools and functionality enabled via environment flags (USE_RERANKING, USE_AGENTIC_RAG, USE_HYBRID_SEARCH, USE_CONTEXTUAL_EMBEDDINGS, CODE_DOMINANCE_THRESHOLD). Note: USE_KNOWLEDGE_GRAPH is commented out.
+
+**Adaptive Code Processing**: Intelligent content analysis automatically detects educational pages (≥40% code content) and processes them differently from traditional documentation pages.
 
 **Lifespan Context Management**: Single async context manager handles all service lifecycles (crawler, database connections, ML models)
 
@@ -58,7 +64,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Environment Configuration
 
 Required: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `BGE_MODEL_PATH`
-Optional: `MODEL_CHOICE` (for LLM features like contextual embeddings)
+Optional: `MODEL_CHOICE` (for LLM features like contextual embeddings), `CODE_DOMINANCE_THRESHOLD` (default: 0.4)
 Transport: `HOST`, `PORT`, `TRANSPORT` (sse/stdio)
 
 ## Database Schema
@@ -70,6 +76,36 @@ Supabase with pgvector extension:
 - Custom RPC functions: `match_crawled_pages`, `match_code_examples`
 
 Neo4j schema: (Commented out - knowledge graph functionality not currently used)
+
+## Adaptive Code Block Processing
+
+The MCP implements intelligent content analysis to optimize processing for educational vs documentation pages:
+
+### Content Detection
+- **Threshold**: Pages with ≥40% code content (configurable via `CODE_DOMINANCE_THRESHOLD`)
+- **Analysis**: `analyze_content_distribution()` calculates code-to-text ratio
+- **Classification**: Educational (code-heavy) vs Documentation (text-heavy) processing paths
+
+### Educational Page Processing (≥40% code)
+- **Code Combination**: All code blocks merged into single seamless tutorial
+- **Context Enhancement**: Educational text becomes rich contextual description
+- **Language Detection**: Primary language identified across all code blocks
+- **AI Summary**: Enhanced prompts with 2000 character context limit, no code truncation
+- **Storage**: Single entry in `code_examples` table per page
+
+### Regular Page Processing (<40% code)
+- **Individual Blocks**: Each code block processed separately  
+- **Standard Context**: 500 character context limits maintained
+- **Parallel Processing**: Concurrent summary generation
+- **Storage**: Multiple entries in `code_examples` table per page
+
+### Key Functions
+- `analyze_content_distribution()`: Content ratio analysis
+- `create_combined_code_block()`: Educational tutorial generation
+- `detect_primary_language()`: Language identification by character count
+- `extract_text_between_code_blocks()`: Educational context extraction
+
+This approach optimizes RAG quality for Jupyter notebook-style educational content while maintaining compatibility with traditional documentation.
 
 ## Local Model Integration
 

@@ -41,6 +41,8 @@ from utils import (  # noqa: E402
     add_code_examples_to_supabase,
     update_source_info,
     extract_source_summary,
+    analyze_content_distribution,
+    create_combined_code_block,
 )
 
 
@@ -284,13 +286,18 @@ def process_code_example(args):
     This function is designed to be used with concurrent.futures.
 
     Args:
-        args: Tuple containing (code, context_before, context_after)
+        args: Tuple containing (code, context_before, context_after, is_educational)
 
     Returns:
         The generated summary
     """
-    code, context_before, context_after = args
-    return generate_code_example_summary(code, context_before, context_after)
+    if len(args) == 4:
+        code, context_before, context_after, is_educational = args
+        return generate_code_example_summary(code, context_before, context_after, is_educational)
+    else:
+        # Backward compatibility
+        code, context_before, context_after = args
+        return generate_code_example_summary(code, context_before, context_after)
 
 
 @mcp.tool()
@@ -374,6 +381,11 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
             # Extract and process code examples only if enabled
             extract_code_examples = os.getenv("USE_AGENTIC_RAG", "false") == "true"
             if extract_code_examples:
+                # Analyze content distribution to determine processing approach
+                code_dominance_threshold = float(os.getenv("CODE_DOMINANCE_THRESHOLD", "0.4"))
+                content_analysis = analyze_content_distribution(result.markdown)
+                is_educational = content_analysis["code_percentage"] >= code_dominance_threshold
+                
                 code_blocks = extract_code_blocks(result.markdown)
                 if code_blocks:
                     code_urls = []
@@ -382,41 +394,73 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                     code_summaries = []
                     code_metadatas = []
 
-                    # Process code examples in parallel
-                    with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=10
-                    ) as executor:
-                        # Prepare arguments for parallel processing
-                        summary_args = [
-                            (
-                                block["code"],
-                                block["context_before"],
-                                block["context_after"],
-                            )
-                            for block in code_blocks
-                        ]
-
-                        # Generate summaries in parallel
-                        summaries = list(
-                            executor.map(process_code_example, summary_args)
+                    if is_educational:
+                        # Educational content: combine all code blocks into one
+                        combined_block = create_combined_code_block(result.markdown, code_blocks)
+                        
+                        # Generate summary for combined block
+                        summary = generate_code_example_summary(
+                            combined_block["code"],
+                            combined_block["context_before"],
+                            combined_block["context_after"],
+                            is_educational=True
                         )
-
-                    # Prepare code example data
-                    for i, (block, summary) in enumerate(zip(code_blocks, summaries)):
+                        
+                        # Prepare single combined entry
                         code_urls.append(url)
-                        code_chunk_numbers.append(i)
-                        code_examples.append(block["code"])
+                        code_chunk_numbers.append(0)
+                        code_examples.append(combined_block["code"])
                         code_summaries.append(summary)
-
-                        # Create metadata for code example
+                        
+                        # Create metadata for combined block
                         code_meta = {
-                            "chunk_index": i,
+                            "chunk_index": 0,
                             "url": url,
                             "source": source_id,
-                            "char_count": len(block["code"]),
-                            "word_count": len(block["code"].split()),
+                            "char_count": len(combined_block["code"]),
+                            "word_count": len(combined_block["code"].split()),
+                            "language": combined_block["language"],
                         }
                         code_metadatas.append(code_meta)
+                        
+                    else:
+                        # Regular content: process individual code blocks
+                        with concurrent.futures.ThreadPoolExecutor(
+                            max_workers=10
+                        ) as executor:
+                            # Prepare arguments for parallel processing
+                            summary_args = [
+                                (
+                                    block["code"],
+                                    block["context_before"],
+                                    block["context_after"],
+                                    False  # is_educational
+                                )
+                                for block in code_blocks
+                            ]
+
+                            # Generate summaries in parallel
+                            summaries = list(
+                                executor.map(process_code_example, summary_args)
+                            )
+
+                        # Prepare individual code block data
+                        for i, (block, summary) in enumerate(zip(code_blocks, summaries)):
+                            code_urls.append(url)
+                            code_chunk_numbers.append(i)
+                            code_examples.append(block["code"])
+                            code_summaries.append(summary)
+
+                            # Create metadata for individual block
+                            code_meta = {
+                                "chunk_index": i,
+                                "url": url,
+                                "source": source_id,
+                                "char_count": len(block["code"]),
+                                "word_count": len(block["code"].split()),
+                                "language": block.get("language", ""),
+                            }
+                            code_metadatas.append(code_meta)
 
                     # Add code examples to Supabase
                     add_code_examples_to_supabase(
@@ -604,54 +648,92 @@ async def smart_crawl_url(
             code_examples = []
             code_summaries = []
             code_metadatas = []
+            
+            # Get threshold for educational content detection
+            code_dominance_threshold = float(os.getenv("CODE_DOMINANCE_THRESHOLD", "0.4"))
 
             # Extract code blocks from all documents
             for doc in crawl_results:
                 source_url = doc["url"]
                 md = doc["markdown"]
+                
+                # Analyze content distribution to determine processing approach
+                content_analysis = analyze_content_distribution(md)
+                is_educational = content_analysis["code_percentage"] >= code_dominance_threshold
+                
                 code_blocks = extract_code_blocks(md)
 
                 if code_blocks:
-                    # Process code examples in parallel
-                    with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=10
-                    ) as executor:
-                        # Prepare arguments for parallel processing
-                        summary_args = [
-                            (
-                                block["code"],
-                                block["context_before"],
-                                block["context_after"],
-                            )
-                            for block in code_blocks
-                        ]
-
-                        # Generate summaries in parallel
-                        summaries = list(
-                            executor.map(process_code_example, summary_args)
-                        )
-
-                    # Prepare code example data
                     parsed_url = urlparse(source_url)
                     source_id = parsed_url.netloc or parsed_url.path
-
-                    for i, (block, summary) in enumerate(zip(code_blocks, summaries)):
+                    
+                    if is_educational:
+                        # Educational content: combine all code blocks into one
+                        combined_block = create_combined_code_block(md, code_blocks)
+                        
+                        # Generate summary for combined block
+                        summary = generate_code_example_summary(
+                            combined_block["code"],
+                            combined_block["context_before"],
+                            combined_block["context_after"],
+                            is_educational=True
+                        )
+                        
+                        # Prepare single combined entry
                         code_urls.append(source_url)
-                        code_chunk_numbers.append(
-                            len(code_examples)
-                        )  # Use global code example index
-                        code_examples.append(block["code"])
+                        code_chunk_numbers.append(len(code_examples))
+                        code_examples.append(combined_block["code"])
                         code_summaries.append(summary)
-
-                        # Create metadata for code example
+                        
+                        # Create metadata for combined block
                         code_meta = {
                             "chunk_index": len(code_examples) - 1,
                             "url": source_url,
                             "source": source_id,
-                            "char_count": len(block["code"]),
-                            "word_count": len(block["code"].split()),
+                            "char_count": len(combined_block["code"]),
+                            "word_count": len(combined_block["code"].split()),
+                            "language": combined_block["language"],
                         }
                         code_metadatas.append(code_meta)
+                        
+                    else:
+                        # Regular content: process individual code blocks
+                        with concurrent.futures.ThreadPoolExecutor(
+                            max_workers=10
+                        ) as executor:
+                            # Prepare arguments for parallel processing
+                            summary_args = [
+                                (
+                                    block["code"],
+                                    block["context_before"],
+                                    block["context_after"],
+                                    False  # is_educational
+                                )
+                                for block in code_blocks
+                            ]
+
+                            # Generate summaries in parallel
+                            summaries = list(
+                                executor.map(process_code_example, summary_args)
+                            )
+
+                        # Prepare individual code block data
+                        for i, (block, summary) in enumerate(zip(code_blocks, summaries)):
+                            code_urls.append(source_url)
+                            code_chunk_numbers.append(len(code_examples))
+                            code_examples.append(block["code"])
+                            code_summaries.append(summary)
+
+                            # Create metadata for individual block
+                            code_meta = {
+                                "chunk_index": len(code_examples) - 1,
+                                "url": source_url,
+                                "source": source_id,
+                                "char_count": len(block["code"]),
+                                "word_count": len(block["code"].split()),
+                                "language": block.get("language", ""),
+                            }
+                            code_metadatas.append(code_meta)
 
             # Add all code examples to Supabase
             if code_examples:

@@ -403,75 +403,79 @@ def extract_code_blocks(
 def analyze_content_distribution(markdown_content: str) -> Dict[str, float]:
     """
     Analyze the distribution of code vs text content in markdown.
-    
+
     Args:
         markdown_content: The markdown content to analyze
-        
+
     Returns:
         Dictionary with code percentage and character counts
     """
     # Extract all code blocks without minimum length filter
     code_blocks = extract_code_blocks(markdown_content, min_length=0)
-    
+
     total_code_chars = sum(len(block["code"]) for block in code_blocks)
     total_content_chars = len(markdown_content)
     text_chars = total_content_chars - total_code_chars
-    
-    code_percentage = total_code_chars / total_content_chars if total_content_chars > 0 else 0
-    
+
+    code_percentage = (
+        total_code_chars / total_content_chars if total_content_chars > 0 else 0
+    )
+
     return {
         "code_percentage": code_percentage,
         "total_code_chars": total_code_chars,
         "total_text_chars": text_chars,
-        "total_content_chars": total_content_chars
+        "total_content_chars": total_content_chars,
     }
 
 
 def detect_primary_language(code_blocks: List[Dict[str, Any]]) -> str:
     """
     Detect the dominant language across all code blocks based on character count.
-    
+
     Args:
         code_blocks: List of code block dictionaries
-        
+
     Returns:
         The dominant language or empty string if none detected
     """
     language_chars = {}
-    
+
     for block in code_blocks:
         lang = block.get("language", "").lower().strip()
         if lang:
             char_count = len(block["code"])
             language_chars[lang] = language_chars.get(lang, 0) + char_count
-    
+
     if not language_chars:
         return ""
-    
+
     # Return language with most characters
     return max(language_chars, key=language_chars.get)
 
 
-def create_combined_code_block(markdown_content: str, code_blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
+def create_combined_code_block(
+    markdown_content: str, code_blocks: List[Dict[str, Any]]
+) -> Dict[str, Any]:
     """
     Combine all code blocks into one seamless block with surrounding text as context.
-    
+
     Args:
         markdown_content: Original markdown content
         code_blocks: List of individual code blocks
-        
+
     Returns:
         Dictionary representing the combined code block
     """
     # Combine all code with simple spacing
     combined_code = "\n\n".join(block["code"] for block in code_blocks)
-    
+
     # Extract all non-code text as context
     text_context = extract_text_between_code_blocks(markdown_content, code_blocks)
-    
+
     # Detect primary language
     primary_language = detect_primary_language(code_blocks)
-    
+
     return {
         "code": combined_code,
         "language": primary_language,
@@ -481,42 +485,44 @@ def create_combined_code_block(markdown_content: str, code_blocks: List[Dict[str
     }
 
 
-def extract_text_between_code_blocks(markdown_content: str, code_blocks: List[Dict[str, Any]]) -> str:
+def extract_text_between_code_blocks(
+    markdown_content: str, code_blocks: List[Dict[str, Any]]
+) -> str:
     """
     Extract all text content that is not within code blocks.
-    
+
     Args:
         markdown_content: The original markdown content
         code_blocks: List of code blocks to exclude
-        
+
     Returns:
         Concatenated text content outside of code blocks
     """
     if not code_blocks:
         return markdown_content.strip()
-    
+
     # Find all code block positions in the original content
     code_positions = []
-    
+
     # Re-find code block positions in original content
     pos = 0
     while True:
         pos = markdown_content.find("```", pos)
         if pos == -1:
             break
-        
+
         # Find the closing backticks
         end_pos = markdown_content.find("```", pos + 3)
         if end_pos == -1:
             break
-            
+
         code_positions.append((pos, end_pos + 3))
         pos = end_pos + 3
-    
+
     # Extract text between code blocks
     text_segments = []
     last_end = 0
-    
+
     for start_pos, end_pos in code_positions:
         # Add text before this code block
         if start_pos > last_end:
@@ -524,13 +530,13 @@ def extract_text_between_code_blocks(markdown_content: str, code_blocks: List[Di
             if text_segment:
                 text_segments.append(text_segment)
         last_end = end_pos
-    
+
     # Add any remaining text after the last code block
     if last_end < len(markdown_content):
         remaining_text = markdown_content[last_end:].strip()
         if remaining_text:
             text_segments.append(remaining_text)
-    
+
     return "\n\n".join(text_segments)
 
 
@@ -561,22 +567,25 @@ def generate_code_example_summary(
 
     # Dynamic context limits based on content type
     context_limit = 2000 if is_code_dominated else 500
-    
+
     # Truncate context_before based on content type
     context_before_truncated = (
-        context_before[-context_limit:] if len(context_before) > context_limit 
+        context_before[-context_limit:]
+        if len(context_before) > context_limit
         else context_before
     )
-    
+
     # For code-dominated content, don't truncate code; for regular content, apply existing limit
-    code_content = code if is_code_dominated else (code[:1500] if len(code) > 1500 else code)
-    
+    code_content = (
+        code if is_code_dominated else (code[:1500] if len(code) > 1500 else code)
+    )
+
     # Create the prompt with appropriate instructions for content type
     if is_code_dominated:
         instruction = "Based on the code-dominated context and complete code tutorial, provide a comprehensive summary (3-4 sentences) that describes the overall goal, key concepts demonstrated, and practical application. Focus on the learning objectives rather than individual code snippets."
     else:
         instruction = "Based on the code example and its surrounding context, provide a concise summary (2-3 sentences) that describes what this code example demonstrates and its purpose. Focus on the practical application and key concepts illustrated."
-    
+
     prompt = f"""<context_before>
 {context_before_truncated}
 </context_before>

@@ -54,7 +54,6 @@ dotenv_path = project_root / ".env"
 load_dotenv(dotenv_path, override=True)
 
 
-
 # Create a dataclass for our application context
 @dataclass
 class Crawl4AIContext:
@@ -94,7 +93,6 @@ async def crawl4ai_lifespan(server: FastMCP) -> AsyncIterator[Crawl4AIContext]:
         except Exception as e:
             print(f"Failed to load reranking model: {e}")
             reranking_model = None
-
 
     try:
         yield Crawl4AIContext(
@@ -293,7 +291,9 @@ def process_code_example(args):
     """
     if len(args) == 4:
         code, context_before, context_after, is_code_dominated = args
-        return generate_code_example_summary(code, context_before, context_after, is_code_dominated)
+        return generate_code_example_summary(
+            code, context_before, context_after, is_code_dominated
+        )
     else:
         # Backward compatibility
         code, context_before, context_after = args
@@ -380,15 +380,22 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
 
             # Extract and process code examples only if enabled
             extract_code_examples = os.getenv("USE_AGENTIC_RAG", "false") == "true"
+            code_examples_combined = False
             if extract_code_examples:
                 # Analyze content distribution to determine processing approach
-                code_dominance_threshold = float(os.getenv("CODE_DOMINANCE_THRESHOLD", "0.4"))
+                code_dominance_threshold = float(
+                    os.getenv("CODE_DOMINANCE_THRESHOLD", "0.4")
+                )
                 content_analysis = analyze_content_distribution(result.markdown)
-                is_code_dominated = content_analysis["code_percentage"] >= code_dominance_threshold
-                
+                is_code_dominated = (
+                    content_analysis["code_percentage"] >= code_dominance_threshold
+                )
+
                 # Extract code blocks with appropriate min_length based on content type
                 min_length = 0 if is_code_dominated else 1000
-                code_blocks = extract_code_blocks(result.markdown, min_length=min_length)
+                code_blocks = extract_code_blocks(
+                    result.markdown, min_length=min_length
+                )
                 if code_blocks:
                     code_urls = []
                     code_chunk_numbers = []
@@ -398,22 +405,25 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
 
                     if is_code_dominated:
                         # Code-dominated content: combine all code blocks into one
-                        combined_block = create_combined_code_block(result.markdown, code_blocks)
-                        
+                        code_examples_combined = True
+                        combined_block = create_combined_code_block(
+                            result.markdown, code_blocks
+                        )
+
                         # Generate summary for combined block
                         summary = generate_code_example_summary(
                             combined_block["code"],
                             combined_block["context_before"],
                             combined_block["context_after"],
-                            is_code_dominated=True
+                            True,
                         )
-                        
+
                         # Prepare single combined entry
                         code_urls.append(url)
                         code_chunk_numbers.append(0)
                         code_examples.append(combined_block["code"])
                         code_summaries.append(summary)
-                        
+
                         # Create metadata for combined block
                         code_meta = {
                             "chunk_index": 0,
@@ -424,7 +434,7 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                             "language": combined_block["language"],
                         }
                         code_metadatas.append(code_meta)
-                        
+
                     else:
                         # Regular content: process individual code blocks
                         with concurrent.futures.ThreadPoolExecutor(
@@ -436,7 +446,7 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                                     block["code"],
                                     block["context_before"],
                                     block["context_after"],
-                                    False  # is_code_dominated
+                                    False,  # is_code_dominated
                                 )
                                 for block in code_blocks
                             ]
@@ -447,7 +457,9 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                             )
 
                         # Prepare individual code block data
-                        for i, (block, summary) in enumerate(zip(code_blocks, summaries)):
+                        for i, (block, summary) in enumerate(
+                            zip(code_blocks, summaries)
+                        ):
                             code_urls.append(url)
                             code_chunk_numbers.append(i)
                             code_examples.append(block["code"])
@@ -474,12 +486,21 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                         code_metadatas,
                     )
 
+            # Format code examples message
+            if extract_code_examples and code_blocks:
+                code_examples_msg = f"{len(code_blocks)} code examples stored"
+                if code_examples_combined:
+                    code_examples_msg += " (combined)"
+            else:
+                code_examples_msg = "0 code examples stored"
+
             return json.dumps(
                 {
                     "success": True,
                     "url": url,
                     "chunks_stored": len(chunks),
                     "code_examples_stored": len(code_blocks) if code_blocks else 0,
+                    "code_examples_message": code_examples_msg,
                     "content_length": len(result.markdown),
                     "total_word_count": total_word_count,
                     "source_id": source_id,
@@ -644,51 +665,59 @@ async def smart_crawl_url(
 
         # Extract and process code examples from all documents only if enabled
         extract_code_examples_enabled = os.getenv("USE_AGENTIC_RAG", "false") == "true"
+        total_original_code_blocks = 0
+        pages_with_combined_code = 0
         if extract_code_examples_enabled:
             code_urls = []
             code_chunk_numbers = []
             code_examples = []
             code_summaries = []
             code_metadatas = []
-            
+
             # Get threshold for educational content detection
-            code_dominance_threshold = float(os.getenv("CODE_DOMINANCE_THRESHOLD", "0.4"))
+            code_dominance_threshold = float(
+                os.getenv("CODE_DOMINANCE_THRESHOLD", "0.4")
+            )
 
             # Extract code blocks from all documents
             for doc in crawl_results:
                 source_url = doc["url"]
                 md = doc["markdown"]
-                
+
                 # Analyze content distribution to determine processing approach
                 content_analysis = analyze_content_distribution(md)
-                is_code_dominated = content_analysis["code_percentage"] >= code_dominance_threshold
-                
+                is_code_dominated = (
+                    content_analysis["code_percentage"] >= code_dominance_threshold
+                )
+
                 # Extract code blocks with appropriate min_length based on content type
                 min_length = 0 if is_code_dominated else 1000
                 code_blocks = extract_code_blocks(md, min_length=min_length)
 
                 if code_blocks:
+                    total_original_code_blocks += len(code_blocks)
                     parsed_url = urlparse(source_url)
                     source_id = parsed_url.netloc or parsed_url.path
-                    
+
                     if is_code_dominated:
                         # Code-dominated content: combine all code blocks into one
+                        pages_with_combined_code += 1
                         combined_block = create_combined_code_block(md, code_blocks)
-                        
+
                         # Generate summary for combined block
                         summary = generate_code_example_summary(
                             combined_block["code"],
                             combined_block["context_before"],
                             combined_block["context_after"],
-                            is_code_dominated=True
+                            True,
                         )
-                        
+
                         # Prepare single combined entry
                         code_urls.append(source_url)
                         code_chunk_numbers.append(len(code_examples))
                         code_examples.append(combined_block["code"])
                         code_summaries.append(summary)
-                        
+
                         # Create metadata for combined block
                         code_meta = {
                             "chunk_index": len(code_examples) - 1,
@@ -699,7 +728,7 @@ async def smart_crawl_url(
                             "language": combined_block["language"],
                         }
                         code_metadatas.append(code_meta)
-                        
+
                     else:
                         # Regular content: process individual code blocks
                         with concurrent.futures.ThreadPoolExecutor(
@@ -711,7 +740,7 @@ async def smart_crawl_url(
                                     block["code"],
                                     block["context_before"],
                                     block["context_after"],
-                                    False  # is_code_dominated
+                                    False,  # is_code_dominated
                                 )
                                 for block in code_blocks
                             ]
@@ -722,7 +751,9 @@ async def smart_crawl_url(
                             )
 
                         # Prepare individual code block data
-                        for i, (block, summary) in enumerate(zip(code_blocks, summaries)):
+                        for i, (block, summary) in enumerate(
+                            zip(code_blocks, summaries)
+                        ):
                             code_urls.append(source_url)
                             code_chunk_numbers.append(len(code_examples))
                             code_examples.append(block["code"])
@@ -750,6 +781,16 @@ async def smart_crawl_url(
                     code_metadatas,
                     batch_size=batch_size,
                 )
+        else:
+            code_examples = []
+
+        # Format code examples message
+        if extract_code_examples_enabled and total_original_code_blocks > 0:
+            code_examples_msg = f"{total_original_code_blocks} code examples stored"
+            if pages_with_combined_code > 0:
+                code_examples_msg += f" ({pages_with_combined_code} pages combined)"
+        else:
+            code_examples_msg = "0 code examples stored"
 
         return json.dumps(
             {
@@ -758,7 +799,8 @@ async def smart_crawl_url(
                 "crawl_type": crawl_type,
                 "pages_crawled": len(crawl_results),
                 "chunks_stored": chunk_count,
-                "code_examples_stored": len(code_examples),
+                "code_examples_stored": len(code_examples) if extract_code_examples_enabled else 0,
+                "code_examples_message": code_examples_msg,
                 "sources_updated": len(source_content_map),
                 "urls_crawled": [doc["url"] for doc in crawl_results][:5]
                 + (["..."] if len(crawl_results) > 5 else []),
@@ -1146,8 +1188,6 @@ async def search_code_examples(
         )
     except Exception as e:
         return json.dumps({"success": False, "query": query, "error": str(e)}, indent=2)
-
-
 
 
 async def crawl_markdown_file(

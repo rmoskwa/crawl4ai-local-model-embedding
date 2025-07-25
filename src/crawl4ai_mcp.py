@@ -32,6 +32,7 @@ from crawl4ai import (
     CacheMode,
     MemoryAdaptiveDispatcher,
 )  # noqa: E402
+from crawl4ai.processors.pdf import PDFCrawlerStrategy, PDFContentScrapingStrategy  # noqa: E402
 from utils import (  # noqa: E402
     get_supabase_client,
     add_documents_to_supabase,
@@ -185,6 +186,19 @@ def is_txt(url: str) -> bool:
     return url.endswith(".txt")
 
 
+def is_pdf(url: str) -> bool:
+    """
+    Check if a URL is a PDF file.
+
+    Args:
+        url: URL to check
+
+    Returns:
+        True if the URL is a PDF file, False otherwise
+    """
+    return url.lower().endswith(".pdf")
+
+
 def parse_sitemap(sitemap_url: str) -> List[str]:
     """
     Parse a sitemap and extract URLs.
@@ -303,14 +317,15 @@ def process_code_example(args):
 @mcp.tool()
 async def crawl_single_page(ctx: Context, url: str) -> str:
     """
-    Crawl a single web page and store its content in Supabase.
+    Crawl a single web page or PDF and store its content in Supabase.
 
     This tool is ideal for quickly retrieving content from a specific URL without following links.
-    The content is stored in Supabase for later retrieval and querying.
+    The content is stored in Supabase for later retrieval and querying. Automatically detects
+    and processes PDF files using appropriate PDF extraction strategies.
 
     Args:
         ctx: The MCP server provided context
-        url: URL of the web page to crawl
+        url: URL of the web page or PDF to crawl
 
     Returns:
         Summary of the crawling operation and storage in Supabase
@@ -320,13 +335,26 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
         crawler = ctx.request_context.lifespan_context.crawler
         supabase_client = ctx.request_context.lifespan_context.supabase_client
 
-        # Configure the crawl
-        run_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False)
+        # Check if URL is a PDF and configure accordingly
+        if is_pdf(url):
+            # PDF-specific configuration
+            pdf_crawler_strategy = PDFCrawlerStrategy()
+            pdf_scraping_strategy = PDFContentScrapingStrategy()
+            
+            # Use PDF-specific crawler and scraping strategy
+            async with AsyncWebCrawler(crawler_strategy=pdf_crawler_strategy) as pdf_crawler:
+                run_config = CrawlerRunConfig(
+                    cache_mode=CacheMode.BYPASS, 
+                    stream=False,
+                    scraping_strategy=pdf_scraping_strategy
+                )
+                result = await pdf_crawler.arun(url=url, config=run_config)
+        else:
+            # Regular web page configuration
+            run_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False)
+            result = await crawler.arun(url=url, config=run_config)
 
-        # Crawl the page
-        result = await crawler.arun(url=url, config=run_config)
-
-        if result.success and result.markdown:
+        if result.markdown:
             # Extract source_id
             parsed_url = urlparse(url)
             source_id = parsed_url.netloc or parsed_url.path
@@ -556,7 +584,11 @@ async def smart_crawl_url(
         crawl_results = []
         crawl_type = None
 
-        if is_txt(url):
+        if is_pdf(url):
+            # For PDF files, use PDF-specific crawl
+            crawl_results = await crawl_pdf_file(url)
+            crawl_type = "pdf_file"
+        elif is_txt(url):
             # For text files, use simple crawl
             crawl_results = await crawl_markdown_file(crawler, url)
             crawl_type = "text_file"
@@ -1213,11 +1245,39 @@ async def crawl_markdown_file(
         return []
 
 
+async def crawl_pdf_file(url: str) -> List[Dict[str, Any]]:
+    """
+    Crawl a PDF file.
+
+    Args:
+        url: URL of the PDF file
+
+    Returns:
+        List of dictionaries with URL and markdown content
+    """
+    pdf_crawler_strategy = PDFCrawlerStrategy()
+    pdf_scraping_strategy = PDFContentScrapingStrategy()
+    
+    async with AsyncWebCrawler(crawler_strategy=pdf_crawler_strategy) as pdf_crawler:
+        crawl_config = CrawlerRunConfig(
+            cache_mode=CacheMode.BYPASS,
+            stream=False,
+            scraping_strategy=pdf_scraping_strategy
+        )
+        
+        result = await pdf_crawler.arun(url=url, config=crawl_config)
+        if result.markdown:  # Check for markdown content regardless of success flag
+            return [{"url": url, "markdown": result.markdown}]
+        else:
+            print(f"Failed to crawl PDF {url}: {result.error_message if result.error_message else 'No content extracted'}")
+            return []
+
+
 async def crawl_batch(
     crawler: AsyncWebCrawler, urls: List[str], max_concurrent: int = 10
 ) -> List[Dict[str, Any]]:
     """
-    Batch crawl multiple URLs in parallel.
+    Batch crawl multiple URLs in parallel, handling both web pages and PDFs.
 
     Args:
         crawler: AsyncWebCrawler instance
@@ -1227,21 +1287,36 @@ async def crawl_batch(
     Returns:
         List of dictionaries with URL and markdown content
     """
-    crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False)
-    dispatcher = MemoryAdaptiveDispatcher(
-        memory_threshold_percent=70.0,
-        check_interval=1.0,
-        max_session_permit=max_concurrent,
-    )
+    # Separate PDFs from regular URLs
+    pdf_urls = [url for url in urls if is_pdf(url)]
+    web_urls = [url for url in urls if not is_pdf(url)]
+    
+    results = []
+    
+    # Handle regular web URLs
+    if web_urls:
+        crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False)
+        dispatcher = MemoryAdaptiveDispatcher(
+            memory_threshold_percent=70.0,
+            check_interval=1.0,
+            max_session_permit=max_concurrent,
+        )
 
-    results = await crawler.arun_many(
-        urls=urls, config=crawl_config, dispatcher=dispatcher
-    )
-    return [
-        {"url": r.url, "markdown": r.markdown}
-        for r in results
-        if r.success and r.markdown
-    ]
+        web_results = await crawler.arun_many(
+            urls=web_urls, config=crawl_config, dispatcher=dispatcher
+        )
+        results.extend([
+            {"url": r.url, "markdown": r.markdown}
+            for r in web_results
+            if r.success and r.markdown
+        ])
+    
+    # Handle PDF URLs
+    for pdf_url in pdf_urls:
+        pdf_results = await crawl_pdf_file(pdf_url)
+        results.extend(pdf_results)
+    
+    return results
 
 
 async def crawl_recursive_internal_links(
@@ -1286,9 +1361,33 @@ async def crawl_recursive_internal_links(
         if not urls_to_crawl:
             break
 
-        results = await crawler.arun_many(
-            urls=urls_to_crawl, config=run_config, dispatcher=dispatcher
-        )
+        # Separate PDFs from regular URLs for this batch
+        pdf_urls = [url for url in urls_to_crawl if is_pdf(url)]
+        web_urls = [url for url in urls_to_crawl if not is_pdf(url)]
+        
+        # Process web URLs
+        if web_urls:
+            results = await crawler.arun_many(
+                urls=web_urls, config=run_config, dispatcher=dispatcher
+            )
+        else:
+            results = []
+            
+        # Process PDF URLs
+        for pdf_url in pdf_urls:
+            pdf_results = await crawl_pdf_file(pdf_url)
+            # Convert PDF results to match arun_many format
+            for pdf_result in pdf_results:
+                # Create a mock result object with necessary attributes
+                class MockResult:
+                    def __init__(self, url, markdown, success=True):
+                        self.url = url
+                        self.markdown = markdown
+                        self.success = success
+                        self.links = {"internal": [], "external": []}  # PDFs don't have links to follow
+                
+                results.append(MockResult(pdf_result["url"], pdf_result["markdown"]))
+        
         next_level_urls = set()
 
         for result in results:
@@ -1297,10 +1396,12 @@ async def crawl_recursive_internal_links(
 
             if result.success and result.markdown:
                 results_all.append({"url": result.url, "markdown": result.markdown})
-                for link in result.links.get("internal", []):
-                    next_url = normalize_url(link["href"])
-                    if next_url not in visited:
-                        next_level_urls.add(next_url)
+                # Only follow links for non-PDF results
+                if hasattr(result, 'links') and result.links and not is_pdf(result.url):
+                    for link in result.links.get("internal", []):
+                        next_url = normalize_url(link["href"])
+                        if next_url not in visited:
+                            next_level_urls.add(next_url)
 
         current_urls = next_level_urls
 

@@ -8,6 +8,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from supabase import create_client, Client
 from urllib.parse import urlparse
 import time
+import requests
+import base64
+import re
 from local_embeddings import create_embedding, create_embeddings_batch
 
 import google.generativeai as genai
@@ -21,17 +24,32 @@ if google_api_key:
 def get_supabase_client() -> Client:
     """
     Get a Supabase client with the URL and key from environment variables.
+    Uses DEV or PROD environment based on USE_DEV_SUPABASE flag.
 
     Returns:
         Supabase client instance
     """
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_KEY")
+    # Check if we should use dev environment (default to True for testing)
+    use_dev = os.getenv("USE_DEV_SUPABASE", "true").lower() == "true"
+    
+    if use_dev:
+        # DEV environment
+        url = os.getenv("SUPABASE_DEV_URL")
+        key = os.getenv("SUPABASE_DEV_SERVICE_KEY")
+        
+        if not url or not key:
+            raise ValueError(
+                "SUPABASE_DEV_URL and SUPABASE_DEV_SERVICE_KEY must be set in environment variables"
+            )
+    else:
+        # PRODUCTION environment
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_KEY")
 
-    if not url or not key:
-        raise ValueError(
-            "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables"
-        )
+        if not url or not key:
+            raise ValueError(
+                "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables"
+            )
 
     return create_client(url, key)
 
@@ -899,3 +917,403 @@ def search_code_examples(
     except Exception as e:
         print(f"Error searching code examples: {e}")
         return []
+
+
+# ============================================================================
+# GitHub API Utilities
+# ============================================================================
+
+# File extensions to skip during crawling
+SKIP_EXTENSIONS = {
+    # Images
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.bmp', '.tiff', '.ico',
+    
+    # Data files  
+    '.mat', '.seq', '.dat', '.csv', '.h5', '.hdf5', '.nc', '.nii',
+    
+    # Archives
+    '.zip', '.gz', '.tar', '.rar', '.7z', '.bz2',
+    
+    # Compiled code/executables
+    '.exe', '.dll', '.so', '.dylib', '.mex', '.mexw64', '.mexa64', '.mexmaci64',
+    
+    # Other binary formats
+    '.pdf', '.docx', '.xlsx', '.pptx', '.bin'
+}
+
+
+def get_github_client():
+    """
+    Get GitHub API client with authentication.
+    
+    Returns:
+        dict: Headers for GitHub API requests
+    """
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        raise ValueError("GITHUB_TOKEN must be set in environment variables")
+    
+    return {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "Crawl4AI-MCP-Server"
+    }
+
+
+def parse_github_url(github_url: str) -> Tuple[str, str]:
+    """
+    Parse GitHub repository URL to extract owner and repository name.
+    
+    Args:
+        github_url: GitHub repository URL (e.g., "https://github.com/pulseq/pulseq")
+        
+    Returns:
+        Tuple of (owner, repo_name)
+    """
+    # Handle various GitHub URL formats
+    github_url = github_url.strip().rstrip('/')
+    
+    # Extract from various formats
+    patterns = [
+        r'github\.com/([^/]+)/([^/]+)',  # https://github.com/owner/repo
+        r'^([^/]+)/([^/]+)$'            # owner/repo
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, github_url)
+        if match:
+            return match.group(1), match.group(2)
+    
+    raise ValueError(f"Invalid GitHub URL format: {github_url}")
+
+
+def get_repository_tree(owner: str, repo: str, sha: str = "HEAD") -> Dict[str, Any]:
+    """
+    Get the complete file tree of a GitHub repository.
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name
+        sha: Git SHA or branch name (default: "HEAD")
+        
+    Returns:
+        Dictionary containing repository tree information
+    """
+    headers = get_github_client()
+    
+    # First get the default branch if sha is "HEAD"
+    if sha == "HEAD":
+        repo_info_url = f"https://api.github.com/repos/{owner}/{repo}"
+        repo_response = requests.get(repo_info_url, headers=headers)
+        repo_response.raise_for_status()
+        default_branch = repo_response.json().get("default_branch", "main")
+        sha = default_branch
+    
+    # Get repository tree recursively
+    tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{sha}"
+    tree_response = requests.get(tree_url, headers=headers, params={"recursive": "1"})
+    tree_response.raise_for_status()
+    
+    return tree_response.json()
+
+
+def get_file_content(owner: str, repo: str, file_path: str, sha: str = "HEAD") -> Dict[str, Any]:
+    """
+    Get the content of a specific file from GitHub repository.
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name  
+        file_path: Path to the file in the repository
+        sha: Git SHA or branch name (default: "HEAD")
+        
+    Returns:
+        Dictionary containing file content and metadata
+    """
+    headers = get_github_client()
+    
+    content_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
+    params = {}
+    if sha != "HEAD":
+        params["ref"] = sha
+        
+    response = requests.get(content_url, headers=headers, params=params)
+    response.raise_for_status()
+    
+    file_data = response.json()
+    
+    # Decode base64 content if it's a file (not a directory)
+    if file_data.get("type") == "file" and "content" in file_data:
+        try:
+            decoded_content = base64.b64decode(file_data["content"]).decode("utf-8")
+            file_data["decoded_content"] = decoded_content
+        except UnicodeDecodeError:
+            # Handle binary files
+            file_data["decoded_content"] = None
+            file_data["is_binary"] = True
+    
+    return file_data
+
+
+def filter_crawlable_files(tree_data: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """
+    Filter repository files to exclude binary/data files and return crawlable files.
+    
+    Args:
+        tree_data: Repository tree data from GitHub API
+        
+    Returns:
+        Tuple of (crawlable_files, skip_report)
+    """
+    crawlable_files = []
+    skip_report = {}
+    
+    for item in tree_data.get("tree", []):
+        if item["type"] != "blob":  # Skip directories
+            continue
+            
+        file_path = item["path"]
+        file_name = os.path.basename(file_path)
+        file_ext = os.path.splitext(file_name)[1].lower()
+        
+        # Check if file should be skipped
+        if file_ext in SKIP_EXTENSIONS:
+            skip_report[file_ext] = skip_report.get(file_ext, 0) + 1
+            continue
+            
+        # Add to crawlable files
+        crawlable_files.append({
+            "path": file_path,
+            "name": file_name,
+            "directory": os.path.dirname(file_path),
+            "extension": file_ext,
+            "size": item.get("size", 0),
+            "sha": item["sha"],
+            "url": item["url"]
+        })
+    
+    return crawlable_files, skip_report
+
+
+def extract_language_metadata(content: str, file_path: str) -> Dict[str, Any]:
+    """
+    Extract language-specific metadata from file content based on file extension.
+    
+    Args:
+        content: File content
+        file_path: Path to the file
+        
+    Returns:
+        Dictionary containing language-specific metadata
+    """
+    file_ext = os.path.splitext(file_path)[1].lower()
+    
+    if file_ext == ".m":
+        return extract_matlab_metadata(content, file_path)
+    elif file_ext in [".cpp", ".c", ".h"]:
+        return extract_cpp_metadata(content, file_path)  
+    elif file_ext in [".py"]:
+        return extract_python_metadata(content, file_path)
+    elif file_ext in [".md", ".txt", ".rst"]:
+        return extract_doc_metadata(content, file_path)
+    elif file_ext == ".ipynb":
+        return extract_notebook_metadata(content, file_path)
+    else:
+        return {"language": "unknown", "file_type": file_ext[1:] if file_ext else "no_extension"}
+
+
+def extract_matlab_metadata(content: str, file_path: str) -> Dict[str, Any]:
+    """Extract MATLAB-specific metadata from file content."""
+    metadata = {
+        "language": "matlab",
+        "function_name": "",
+        "function_signature": "",
+        "dependencies": []
+    }
+    
+    # Extract function information
+    function_match = re.search(r"function\s+(?:\[?[^\]]*\]?\s*=\s*)?(\w+)\s*\([^)]*\)", content, re.MULTILINE)
+    if function_match:
+        metadata["function_name"] = function_match.group(1)
+        metadata["function_signature"] = function_match.group(0)
+    
+    # Extract function calls (dependencies)
+    func_calls = re.findall(r"(\w+)\s*\(", content)
+    metadata["dependencies"] = list(set(func_calls))
+    
+    return metadata
+
+
+def extract_cpp_metadata(content: str, file_path: str) -> Dict[str, Any]:
+    """Extract C++-specific metadata from file content."""
+    metadata = {
+        "language": "cpp",
+        "is_header": file_path.endswith(".h"),
+        "class_names": [],
+        "function_names": [],
+        "includes": []
+    }
+    
+    # Extract class names
+    class_matches = re.findall(r"class\s+(\w+)", content)
+    metadata["class_names"] = list(set(class_matches))
+    
+    # Extract function names
+    func_matches = re.findall(r"(?:^|\s)(\w+)\s*\([^)]*\)\s*{", content, re.MULTILINE)
+    metadata["function_names"] = list(set(func_matches))
+    
+    # Extract includes
+    include_matches = re.findall(r"#include\s+[<\"](.*)[>\"]", content)
+    metadata["includes"] = list(set(include_matches))
+    
+    return metadata
+
+
+def extract_python_metadata(content: str, file_path: str) -> Dict[str, Any]:
+    """Extract Python-specific metadata from file content."""
+    metadata = {
+        "language": "python",
+        "class_names": [],
+        "function_names": [],
+        "imports": []
+    }
+    
+    # Extract class names
+    class_matches = re.findall(r"^class\s+(\w+)", content, re.MULTILINE)
+    metadata["class_names"] = list(set(class_matches))
+    
+    # Extract function names
+    func_matches = re.findall(r"^def\s+(\w+)", content, re.MULTILINE)
+    metadata["function_names"] = list(set(func_matches))
+    
+    # Extract imports
+    import_matches = re.findall(r"^(?:from\s+[\w.]+\s+)?import\s+([\w., ]+)", content, re.MULTILINE)
+    metadata["imports"] = list(set([imp.strip() for line in import_matches for imp in line.split(",")]))
+    
+    return metadata
+
+
+def extract_doc_metadata(content: str, file_path: str) -> Dict[str, Any]:
+    """Extract documentation-specific metadata from file content."""
+    metadata = {
+        "language": "markdown" if file_path.endswith(".md") else "text",
+        "doc_type": "readme" if "readme" in file_path.lower() else "documentation",
+        "section_headers": []
+    }
+    
+    # Extract section headers for markdown
+    if file_path.endswith(".md"):
+        header_matches = re.findall(r"^#+\s+(.+)$", content, re.MULTILINE)
+        metadata["section_headers"] = header_matches
+    
+    return metadata
+
+
+def process_notebook_as_script(content: str, file_path: str) -> Tuple[str, str, Dict[str, Any]]:
+    """
+    Process Jupyter notebook by combining code cells into a single script 
+    and using markdown/raw cells for context.
+    
+    Args:
+        content: Raw notebook JSON content
+        file_path: Path to the notebook file
+        
+    Returns:
+        Tuple of (combined_code, context, notebook_metadata)
+    """
+    try:
+        import json
+        notebook_data = json.loads(content)
+        
+        if "cells" not in notebook_data:
+            return "", "Empty notebook - no cells found", {"language": "unknown", "cell_count": 0}
+        
+        code_blocks = []
+        context_blocks = []
+        
+        # Extract language from notebook metadata
+        notebook_metadata = notebook_data.get("metadata", {})
+        kernel_info = notebook_metadata.get("kernelspec", {})
+        language = kernel_info.get("language", "python").lower()
+        
+        # Process each cell
+        for i, cell in enumerate(notebook_data["cells"]):
+            cell_type = cell.get("cell_type", "")
+            source = cell.get("source", [])
+            
+            # Convert source to string if it's a list
+            if isinstance(source, list):
+                source_text = "".join(source).strip()
+            else:
+                source_text = str(source).strip()
+            
+            if cell_type == "code" and source_text:
+                code_blocks.append(source_text)
+                
+            elif cell_type in ["markdown", "raw"] and source_text:
+                context_blocks.append(f"[{cell_type.upper()} CELL {i}]\n{source_text}")
+        
+        # Combine all code blocks into a single seamless script
+        combined_code = "\n\n".join(code_blocks) if code_blocks else ""
+        
+        # Create context from markdown and raw cells
+        context_text = "\n\n".join(context_blocks) if context_blocks else "No markdown context available"
+        
+        # Return notebook metadata
+        nb_metadata = {
+            "language": language,
+            "cell_count": len(notebook_data["cells"]),
+            "code_cells": len(code_blocks),
+            "context_cells": len(context_blocks),
+            "kernel_name": kernel_info.get("name", ""),
+            "has_combined_code": bool(combined_code)
+        }
+        
+        return combined_code, context_text, nb_metadata
+        
+    except json.JSONDecodeError:
+        return "", "Invalid notebook JSON format", {"language": "unknown", "error": "JSON parse error"}
+    except Exception as e:
+        return "", f"Error processing notebook: {str(e)}", {"language": "unknown", "error": str(e)}
+
+
+def extract_notebook_metadata(content: str, file_path: str) -> Dict[str, Any]:
+    """
+    Extract Jupyter notebook metadata by processing it as a script.
+    This integrates with existing language-specific processing.
+    """
+    combined_code, context, nb_metadata = process_notebook_as_script(content, file_path)
+    
+    if not combined_code:
+        return {
+            "language": "jupyter",
+            "notebook_language": nb_metadata.get("language", "unknown"),
+            **nb_metadata
+        }
+    
+    # Get the notebook's primary language
+    notebook_language = nb_metadata.get("language", "python")
+    
+    # Process the combined code using existing language-specific extractors
+    if notebook_language == "matlab":
+        script_metadata = extract_matlab_metadata(combined_code, f"{file_path}_combined.m")
+    elif notebook_language == "python":
+        script_metadata = extract_python_metadata(combined_code, f"{file_path}_combined.py")
+    elif notebook_language in ["cpp", "c++"]:
+        script_metadata = extract_cpp_metadata(combined_code, f"{file_path}_combined.cpp")
+    else:
+        # Default metadata for unknown languages
+        script_metadata = {
+            "language": notebook_language,
+            "function_names": [],
+            "dependencies": []
+        }
+    
+    # Combine notebook metadata with script metadata
+    return {
+        **script_metadata,
+        "notebook_language": notebook_language,
+        "combined_code_length": len(combined_code),
+        "context_length": len(context),
+        **nb_metadata
+    }

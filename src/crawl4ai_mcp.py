@@ -44,6 +44,14 @@ from utils import (  # noqa: E402
     extract_source_summary,
     analyze_content_distribution,
     create_combined_code_block,
+    # GitHub utilities
+    parse_github_url,
+    get_repository_tree,
+    get_file_content,
+    filter_crawlable_files,
+    extract_language_metadata,
+    process_notebook_as_script,
+    SKIP_EXTENSIONS,
 )
 
 
@@ -1406,6 +1414,318 @@ async def crawl_recursive_internal_links(
         current_urls = next_level_urls
 
     return results_all
+
+
+# ============================================================================
+# GitHub Repository Crawling MCP Tools
+# ============================================================================
+
+@mcp.tool()
+async def analyze_github_repo(ctx: Context, github_url: str) -> str:
+    """
+    Analyze a GitHub repository structure and return crawlable files information.
+    
+    This tool fetches the repository structure, filters out binary/data files,
+    and provides a summary of crawlable content organized by file type and directory.
+    
+    Args:
+        ctx: The MCP server provided context
+        github_url: GitHub repository URL (e.g., "https://github.com/pulseq/pulseq")
+        
+    Returns:
+        JSON string with repository analysis and crawlable files summary
+    """
+    try:
+        # Parse GitHub URL
+        owner, repo = parse_github_url(github_url)
+        
+        # Get repository tree
+        tree_data = get_repository_tree(owner, repo)
+        
+        # Filter crawlable files and get skip report
+        crawlable_files, skip_report = filter_crawlable_files(tree_data)
+        
+        # Organize files by extension and directory
+        files_by_extension = {}
+        files_by_directory = {}
+        
+        for file_info in crawlable_files:
+            ext = file_info["extension"]
+            directory = file_info["directory"]
+            
+            # Group by extension
+            if ext not in files_by_extension:
+                files_by_extension[ext] = []
+            files_by_extension[ext].append(file_info)
+            
+            # Group by directory
+            if directory not in files_by_directory:
+                files_by_directory[directory] = []
+            files_by_directory[directory].append(file_info)
+        
+        # Create summary
+        summary = {
+            "repository": f"{owner}/{repo}",
+            "total_crawlable_files": len(crawlable_files),
+            "files_by_extension": {
+                ext: {
+                    "count": len(files),
+                    "total_size": sum(f["size"] for f in files),
+                    "examples": [f["path"] for f in files[:3]]  # Show first 3 as examples
+                }
+                for ext, files in files_by_extension.items()
+            },
+            "files_by_directory": {
+                directory: {
+                    "count": len(files),
+                    "extensions": list(set(f["extension"] for f in files))
+                }
+                for directory, files in files_by_directory.items()
+                if directory  # Skip root directory
+            },
+            "skipped_files": {
+                "extensions": skip_report,
+                "total_skipped": sum(skip_report.values()),
+                "skipped_extensions": list(skip_report.keys())
+            }
+        }
+        
+        return json.dumps(summary, indent=2)
+        
+    except Exception as e:
+        return json.dumps({
+            "error": f"Failed to analyze repository: {str(e)}",
+            "repository": github_url
+        })
+
+
+@mcp.tool()
+async def crawl_github_repo(
+    ctx: Context, 
+    github_url: str, 
+    file_extensions: str = "all",
+    max_files: int = 100
+) -> str:
+    """
+    Crawl a GitHub repository and store selected files in Supabase.
+    
+    This tool fetches content from GitHub repository files, processes them with 
+    appropriate metadata, and stores them in both crawled_pages and code_examples tables.
+    
+    Args:
+        ctx: The MCP server provided context
+        github_url: GitHub repository URL (e.g., "https://github.com/pulseq/pulseq")
+        file_extensions: Comma-separated list of extensions to crawl (e.g., ".m,.py,.md") or "all"
+        max_files: Maximum number of files to crawl (default: 100)
+        
+    Returns:
+        JSON string with crawling results and statistics
+    """
+    supabase_client: Client = ctx.context.supabase_client
+    
+    try:
+        # Parse GitHub URL
+        owner, repo = parse_github_url(github_url)
+        
+        # Get repository tree and filter crawlable files
+        tree_data = get_repository_tree(owner, repo)
+        crawlable_files, skip_report = filter_crawlable_files(tree_data)
+        
+        # Filter by requested extensions if not "all"
+        if file_extensions.lower() != "all":
+            requested_extensions = [ext.strip().lower() for ext in file_extensions.split(",")]
+            crawlable_files = [
+                f for f in crawlable_files 
+                if f["extension"].lower() in requested_extensions
+            ]
+        
+        # Track files skipped due to max file limit
+        total_eligible_files = len(crawlable_files)
+        files_skipped_by_limit = 0
+        
+        # Limit number of files
+        if len(crawlable_files) > max_files:
+            files_skipped_by_limit = len(crawlable_files) - max_files
+            crawlable_files = crawlable_files[:max_files]
+            
+        # Initialize collections for batch processing
+        doc_urls = []
+        doc_chunk_numbers = []
+        doc_contents = []
+        doc_metadatas = []
+        
+        code_urls = []
+        code_chunk_numbers = []
+        code_examples = []
+        code_summaries = []
+        code_metadatas = []
+        
+        processed_files = 0
+        errors = []
+        
+        # Process files in batches to avoid API rate limits
+        for file_info in crawlable_files:
+            try:
+                # Get file content from GitHub
+                file_data = get_file_content(owner, repo, file_info["path"])
+                
+                if file_data.get("is_binary") or not file_data.get("decoded_content"):
+                    continue
+                    
+                content = file_data["decoded_content"]
+                
+                # Create GitHub file URL
+                github_file_url = f"https://github.com/{owner}/{repo}/blob/master/{file_info['path']}"
+                
+                # Special handling for Jupyter notebooks
+                if file_info["extension"] == ".ipynb":
+                    # Process notebook as script
+                    combined_code, context, notebook_metadata = process_notebook_as_script(content, file_info["path"])
+                    
+                    if combined_code:
+                        # Use combined code as content and treat according to notebook language
+                        content_to_store = combined_code
+                        lang_metadata = extract_language_metadata(combined_code, f"{file_info['path']}_combined.{notebook_metadata.get('language', 'py')}")
+                        
+                        # Add notebook-specific metadata
+                        lang_metadata.update({
+                            "notebook_language": notebook_metadata.get("language", "python"),
+                            "notebook_context": context,
+                            "cell_count": notebook_metadata.get("cell_count", 0),
+                            "code_cells": notebook_metadata.get("code_cells", 0),
+                            "context_cells": notebook_metadata.get("context_cells", 0)
+                        })
+                    else:
+                        # If no code, store the context as content
+                        content_to_store = context
+                        lang_metadata = {"language": "jupyter", **notebook_metadata}
+                else:
+                    # Regular file processing
+                    content_to_store = content
+                    lang_metadata = extract_language_metadata(content, file_info["path"])
+                
+                # Create base metadata following existing schema
+                base_metadata = {
+                    # Existing core fields
+                    "url": github_file_url,
+                    "source": f"github.com/{owner}/{repo}",
+                    "headers": lang_metadata.get("function_signature", ""),
+                    "char_count": len(content_to_store),
+                    "chunk_size": len(content_to_store),
+                    "crawl_time": "github_api",
+                    "word_count": len(content_to_store.split()),
+                    "chunk_index": 0,
+                    "contextual_embedding": False,
+                    
+                    # GitHub-specific extensions
+                    "source_type": "github",
+                    "repo_owner": owner,
+                    "repo_name": repo,
+                    "file_path": file_info["path"],
+                    "file_extension": file_info["extension"],
+                    "file_category": "repository_file",
+                    "commit_sha": tree_data.get("sha", ""),
+                    
+                    # Language-specific metadata
+                    **lang_metadata
+                }
+                
+                # Add to documents collection
+                doc_urls.append(github_file_url)
+                doc_chunk_numbers.append(0)
+                doc_contents.append(content_to_store)
+                doc_metadatas.append(base_metadata.copy())
+                
+                # If it's a code file or notebook with code, also add to code examples
+                is_code_file = (
+                    file_info["extension"] in [".m", ".py", ".cpp", ".c", ".h", ".js", ".ts"] or
+                    (file_info["extension"] == ".ipynb" and lang_metadata.get("language") != "jupyter")
+                )
+                
+                if is_code_file:
+                    # Generate code summary
+                    code_summary = generate_code_example_summary(content_to_store, content_to_store[:500], content_to_store[-500:])
+                    
+                    # Code-specific metadata
+                    code_metadata = base_metadata.copy()
+                    code_metadata.update({
+                        "language": lang_metadata.get("language", "unknown"),
+                        "char_count": len(content_to_store),
+                        "word_count": len(content_to_store.split()),
+                        "chunk_index": 0
+                    })
+                    
+                    code_urls.append(github_file_url)
+                    code_chunk_numbers.append(0)
+                    code_examples.append(content_to_store)
+                    code_summaries.append(code_summary)
+                    code_metadatas.append(code_metadata)
+                
+                processed_files += 1
+                
+            except Exception as e:
+                errors.append(f"Error processing {file_info['path']}: {str(e)}")
+                continue
+        
+        # Store in Supabase
+        if doc_urls:
+            add_documents_to_supabase(
+                supabase_client,
+                doc_urls,
+                doc_chunk_numbers, 
+                doc_contents,
+                doc_metadatas,
+                {url: content for url, content in zip(doc_urls, doc_contents)}
+            )
+            
+        if code_urls:
+            add_code_examples_to_supabase(
+                supabase_client,
+                code_urls,
+                code_chunk_numbers,
+                code_examples,
+                code_summaries,
+                code_metadatas
+            )
+        
+        # Update source info
+        source_id = f"github.com/{owner}/{repo}"
+        total_content = " ".join(doc_contents)
+        source_summary = extract_source_summary(total_content)
+        update_source_info(supabase_client, source_id, source_summary, len(total_content.split()))
+        
+        # Prepare result
+        result = {
+            "success": True,
+            "repository": f"{owner}/{repo}",
+            "total_eligible_files": total_eligible_files,
+            "processed_files": processed_files,
+            "documents_stored": len(doc_urls),
+            "code_examples_stored": len(code_urls),
+            "files_by_extension": {},
+            "skipped_files": {
+                "by_extension": skip_report,
+                "by_extension_total": sum(skip_report.values()),
+                "by_file_limit": files_skipped_by_limit,
+                "total_skipped": sum(skip_report.values()) + files_skipped_by_limit
+            },
+            "errors": errors
+        }
+        
+        # Add extension breakdown
+        for file_info in crawlable_files[:processed_files]:
+            ext = file_info["extension"]
+            if ext not in result["files_by_extension"]:
+                result["files_by_extension"][ext] = 0
+            result["files_by_extension"][ext] += 1
+            
+        return json.dumps(result, indent=2)
+        
+    except Exception as e:
+        return json.dumps({
+            "error": f"Failed to crawl repository: {str(e)}",
+            "repository": github_url
+        })
 
 
 async def main():

@@ -25,18 +25,12 @@ class LocalEmbeddingService:
         self.tokenizer = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Determine model path - support dev/prod environments
+        # Determine model path
         if model_path is None:
-            use_dev = os.getenv("USE_DEV_SUPABASE", "true").lower() == "true"
-            if use_dev:
-                model_path = os.getenv("BGE_MODEL_PATH_DEV")
-                if model_path is None:
-                    model_path = os.getenv("BGE_MODEL_PATH")
-            else:
-                model_path = os.getenv("BGE_MODEL_PATH")
+            model_path = os.getenv("BGE_MODEL_PATH")
             
             if model_path is None:
-                raise ValueError("BGE_MODEL_PATH (or BGE_MODEL_PATH_DEV) environment variable must be set")
+                raise ValueError("BGE_MODEL_PATH environment variable must be set")
 
         self.model_path = model_path
         self._load_model()

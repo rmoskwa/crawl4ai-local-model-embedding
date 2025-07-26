@@ -1667,7 +1667,25 @@ async def crawl_github_repo(
                 errors.append(f"Error processing {file_info['path']}: {str(e)}")
                 continue
         
-        # Store in Supabase
+        # Update source info FIRST (before inserting documents with foreign key references)
+        source_id = f"github.com/{owner}/{repo}"
+        total_content = " ".join(doc_contents)
+        
+        # Use parallel processing for source summary generation (matching smart_crawl_url pattern)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            source_summary_args = [(source_id, total_content)]
+            source_summaries = list(
+                executor.map(
+                    lambda args: extract_source_summary(args[0], args[1]),
+                    source_summary_args,
+                )
+            )
+        
+        source_summary = source_summaries[0]
+        update_source_info(supabase_client, source_id, source_summary, len(total_content.split()))
+        
+        # Store in Supabase AFTER source exists
+        batch_size = 20
         if doc_urls:
             add_documents_to_supabase(
                 supabase_client,
@@ -1675,7 +1693,8 @@ async def crawl_github_repo(
                 doc_chunk_numbers, 
                 doc_contents,
                 doc_metadatas,
-                {url: content for url, content in zip(doc_urls, doc_contents)}
+                {url: content for url, content in zip(doc_urls, doc_contents)},
+                batch_size=batch_size
             )
             
         if code_urls:
@@ -1685,14 +1704,9 @@ async def crawl_github_repo(
                 code_chunk_numbers,
                 code_examples,
                 code_summaries,
-                code_metadatas
+                code_metadatas,
+                batch_size=batch_size
             )
-        
-        # Update source info
-        source_id = f"github.com/{owner}/{repo}"
-        total_content = " ".join(doc_contents)
-        source_summary = extract_source_summary(total_content)
-        update_source_info(supabase_client, source_id, source_summary, len(total_content.split()))
         
         # Prepare result
         result = {

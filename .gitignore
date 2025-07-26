@@ -6,3 +6,7 @@ repos
 .claude
 test_script_hallucination*
 CLAUDE.md
+# Google Cloud service account keys
+gen-lang-client-*.json
+*-service-account-key.json
+service-account*.json

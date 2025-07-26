@@ -13,12 +13,14 @@ import base64
 import re
 from local_embeddings import create_embedding, create_embeddings_batch
 
-import google.generativeai as genai
+import vertexai
+from vertexai.generative_models import GenerativeModel, GenerationConfig
 
-# Configure Google Generative AI
-google_api_key = os.getenv("GOOGLE_API_KEY")
-if google_api_key:
-    genai.configure(api_key=google_api_key)
+# Configure Vertex AI
+project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+location = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
+if project_id:
+    vertexai.init(project=project_id, location=location)
 
 
 def get_supabase_client() -> Client:
@@ -67,13 +69,13 @@ def generate_contextual_embedding(full_document: str, chunk: str) -> Tuple[str, 
         - The contextual text that situates the chunk within the document
         - Boolean indicating if contextual embedding was performed
     """
-    model_choice = os.getenv("MODEL_CHOICE")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
+    model_choice = os.getenv("MODEL_CHOICE", "gemma-2-9b-it")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
 
-    # Check if we have both model choice and API key
-    if not model_choice or not google_api_key:
+    # Check if we have the required project configuration
+    if not project_id:
         print(
-            "Contextual embeddings require MODEL_CHOICE and GOOGLE_API_KEY - using original chunk"
+            "Contextual embeddings require GOOGLE_CLOUD_PROJECT - using original chunk"
         )
         return chunk, False
 
@@ -88,11 +90,11 @@ Here is the chunk we want to situate within the whole document
 </chunk> 
 Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else."""
 
-        # Use Google Generative AI to generate contextual information
-        model = genai.GenerativeModel(model_choice)
+        # Use Vertex AI Generative AI to generate contextual information
+        model = GenerativeModel(model_choice)
         response = model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(
+            generation_config=GenerationConfig(
                 temperature=0.3,
                 max_output_tokens=200,
             ),
@@ -573,13 +575,13 @@ def generate_code_example_summary(
     Returns:
         A summary of what the code example demonstrates
     """
-    model_choice = os.getenv("MODEL_CHOICE")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
+    model_choice = os.getenv("MODEL_CHOICE", "gemma-2-9b-it")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
 
     # Check if we have the required configuration
-    if not model_choice or not google_api_key:
+    if not project_id:
         print(
-            "Code example summary generation requires MODEL_CHOICE and GOOGLE_API_KEY - using generic summary"
+            "Code example summary generation requires GOOGLE_CLOUD_PROJECT - using generic summary"
         )
         return "Code example for demonstration purposes."
 
@@ -620,11 +622,11 @@ def generate_code_example_summary(
 """
 
     try:
-        # Use Google Generative AI to generate code example summary
-        model = genai.GenerativeModel(model_choice)
+        # Use Vertex AI Generative AI to generate code example summary
+        model = GenerativeModel(model_choice)
         response = model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(
+            generation_config=GenerationConfig(
                 temperature=0.3,
                 max_output_tokens=100,
             ),
@@ -821,13 +823,13 @@ def extract_source_summary(source_id: str, content: str, max_length: int = 500) 
         return default_summary
 
     # Get the model choice from environment variables
-    model_choice = os.getenv("MODEL_CHOICE")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
+    model_choice = os.getenv("MODEL_CHOICE", "gemma-2-9b-it")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
 
     # Check if we have the required configuration
-    if not model_choice or not google_api_key:
+    if not project_id:
         print(
-            f"Source summary generation requires MODEL_CHOICE and GOOGLE_API_KEY - using generic summary for {source_id}"
+            f"Source summary generation requires GOOGLE_CLOUD_PROJECT - using generic summary for {source_id}"
         )
         return f"Documentation and content from {source_id}"
 
@@ -843,11 +845,11 @@ The above content is from the documentation for '{source_id}'. Please provide a 
 """
 
     try:
-        # Use Google Generative AI to generate the summary
-        model = genai.GenerativeModel(model_choice)
+        # Use Vertex AI Generative AI to generate the summary
+        model = GenerativeModel(model_choice)
         response = model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(
+            generation_config=GenerationConfig(
                 temperature=0.3,
                 max_output_tokens=150,
             ),

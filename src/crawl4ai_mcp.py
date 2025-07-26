@@ -1521,7 +1521,7 @@ async def crawl_github_repo(
     Returns:
         JSON string with crawling results and statistics
     """
-    supabase_client: Client = ctx.context.supabase_client
+    supabase_client: Client = ctx.request_context.lifespan_context.supabase_client
     
     try:
         # Parse GitHub URL

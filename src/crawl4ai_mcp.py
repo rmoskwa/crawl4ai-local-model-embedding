@@ -692,8 +692,8 @@ async def smart_crawl_url(
             update_source_info(supabase_client, source_id, summary, word_count)
 
         # Add documentation chunks to Supabase (AFTER sources exist)
-        batch_size = 20
-        add_documents_to_supabase(
+        batch_size = 10
+        await add_documents_to_supabase(
             supabase_client,
             urls,
             chunk_numbers,
@@ -812,7 +812,7 @@ async def smart_crawl_url(
 
             # Add all code examples to Supabase
             if code_examples:
-                add_code_examples_to_supabase(
+                await add_code_examples_to_supabase(
                     supabase_client,
                     code_urls,
                     code_chunk_numbers,
@@ -1577,6 +1577,48 @@ async def crawl_github_repo(
                 # Create GitHub file URL
                 github_file_url = f"https://github.com/{owner}/{repo}/blob/master/{file_info['path']}"
                 
+                # Special handling for PDF files
+                if file_info["extension"] == ".pdf":
+                    # Use existing PDF crawling functionality
+                    raw_file_url = f"https://github.com/{owner}/{repo}/raw/master/{file_info['path']}"
+                    pdf_results = await crawl_pdf_file(raw_file_url)
+                    
+                    if pdf_results:
+                        for pdf_result in pdf_results:
+                            pdf_content = pdf_result["markdown"]
+                            
+                            # Create PDF-specific metadata
+                            pdf_metadata = {
+                                "url": github_file_url,
+                                "source": f"github.com/{owner}/{repo}",
+                                "headers": f"PDF: {file_info['path']}",
+                                "char_count": len(pdf_content),
+                                "chunk_size": len(pdf_content),
+                                "crawl_time": "github_api_pdf",
+                                "word_count": len(pdf_content.split()),
+                                "chunk_index": 0,
+                                "contextual_embedding": False,
+                                "source_type": "github",
+                                "repo_owner": owner,
+                                "repo_name": repo,
+                                "file_path": file_info["path"],
+                                "file_extension": ".pdf",
+                                "file_category": "pdf_document",
+                                "commit_sha": tree_data.get("sha", ""),
+                                "language": "pdf",
+                                "content_type": "document"
+                            }
+                            
+                            # Add to documents collection
+                            doc_urls.append(github_file_url)
+                            doc_chunk_numbers.append(0)
+                            doc_contents.append(pdf_content)
+                            doc_metadatas.append(pdf_metadata)
+                    
+                    processed_files += 1
+                    await asyncio.sleep(0.05)
+                    continue
+                
                 # Special handling for Jupyter notebooks
                 if file_info["extension"] == ".ipynb":
                     # Process notebook as script
@@ -1663,6 +1705,9 @@ async def crawl_github_repo(
                 
                 processed_files += 1
                 
+                # Add brief delay between file processing to reduce system load
+                await asyncio.sleep(0.05)
+                
             except Exception as e:
                 errors.append(f"Error processing {file_info['path']}: {str(e)}")
                 continue
@@ -1685,9 +1730,9 @@ async def crawl_github_repo(
         update_source_info(supabase_client, source_id, source_summary, len(total_content.split()))
         
         # Store in Supabase AFTER source exists
-        batch_size = 20
+        batch_size = 10
         if doc_urls:
-            add_documents_to_supabase(
+            await add_documents_to_supabase(
                 supabase_client,
                 doc_urls,
                 doc_chunk_numbers, 
@@ -1698,7 +1743,7 @@ async def crawl_github_repo(
             )
             
         if code_urls:
-            add_code_examples_to_supabase(
+            await add_code_examples_to_supabase(
                 supabase_client,
                 code_urls,
                 code_chunk_numbers,

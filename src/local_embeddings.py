@@ -182,7 +182,7 @@ class LocalEmbeddingService:
                     return [[0.0] * 1024 for _ in texts]
 
                 # Process in smaller batches to avoid memory issues
-                batch_size = 32
+                batch_size = 16
                 all_embeddings = []
 
                 for i in range(0, len(non_empty_texts), batch_size):

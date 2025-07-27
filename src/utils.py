@@ -4,6 +4,8 @@ Utility functions for the Crawl4AI MCP server.
 
 import os
 import concurrent.futures
+import asyncio
+import gc
 from typing import List, Dict, Any, Optional, Tuple
 from supabase import create_client, Client
 from urllib.parse import urlparse
@@ -172,14 +174,14 @@ def process_chunk_with_context(args):
     return generate_contextual_embedding(full_document, content)
 
 
-def add_documents_to_supabase(
+async def add_documents_to_supabase(
     client: Client,
     urls: List[str],
     chunk_numbers: List[int],
     contents: List[str],
     metadatas: List[Dict[str, Any]],
     url_to_full_document: Dict[str, str],
-    batch_size: int = 20,
+    batch_size: int = 10,
 ) -> None:
     """
     Add documents to the Supabase crawled_pages table in batches.
@@ -317,7 +319,7 @@ def add_documents_to_supabase(
                         f"Error inserting batch into Supabase (attempt {retry + 1}/{max_retries}): {e}"
                     )
                     print(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
+                    await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                 else:
                     # Final attempt failed
@@ -338,6 +340,12 @@ def add_documents_to_supabase(
                         print(
                             f"Successfully inserted {successful_inserts}/{len(batch_data)} records individually"
                         )
+        
+        # Add brief delay between batches to reduce system load
+        await asyncio.sleep(0.1)
+        
+        # Trigger garbage collection after each batch to manage memory
+        gc.collect()
 
 
 def search_documents(
@@ -670,14 +678,14 @@ def generate_code_example_summary(
         return "Code example for demonstration purposes."
 
 
-def add_code_examples_to_supabase(
+async def add_code_examples_to_supabase(
     client: Client,
     urls: List[str],
     chunk_numbers: List[int],
     code_examples: List[str],
     summaries: List[str],
     metadatas: List[Dict[str, Any]],
-    batch_size: int = 20,
+    batch_size: int = 10,
 ):
     """
     Add code examples to the Supabase code_examples table in batches.
@@ -771,7 +779,7 @@ def add_code_examples_to_supabase(
                         f"Error inserting batch into Supabase (attempt {retry + 1}/{max_retries}): {e}"
                     )
                     print(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
+                    await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                 else:
                     # Final attempt failed
@@ -795,6 +803,12 @@ def add_code_examples_to_supabase(
         print(
             f"Inserted batch {i // batch_size + 1} of {(total_items + batch_size - 1) // batch_size} code examples"
         )
+        
+        # Add brief delay between batches to reduce system load
+        await asyncio.sleep(0.1)
+        
+        # Trigger garbage collection after each batch to manage memory
+        gc.collect()
 
 
 def update_source_info(client: Client, source_id: str, summary: str, word_count: int):
@@ -983,11 +997,30 @@ SKIP_EXTENSIONS = {
     ".mexa64",
     ".mexmaci64",
     # Other binary formats
-    ".pdf",
     ".docx",
     ".xlsx",
     ".pptx",
     ".bin",
+    # Build system files (low RAG value)
+    ".am",
+    ".in",
+    ".ac", 
+    ".cmake",
+    ".pro",
+    ".pri",
+    # IDE/Editor files (no RAG value)
+    ".sln",
+    ".vcxproj",
+    ".filters",
+    ".user",
+    ".prj",
+    # Test output/data files (no RAG value)
+    ".out",
+    ".log",
+    ".tmp",
+    # Package management (usually not useful for RAG)
+    ".lock",
+    ".resolved",
 }
 
 

@@ -4,9 +4,7 @@
   <em>Web Crawling and RAG Capabilities for AI Agents and AI Coding Assistants</em>
 </p>
 
-A fork of [Crawl4AI](https://github.com/coleam00/mcp-crawl4ai-rag/tree/main). This implementation uses the local BAAI-bge-large-en-v1.5 model for embeddings (1024 dimensions) instead of OpenAI's embedding API, providing better privacy and eliminating API costs for embedding generation. For LLM features (contextual embeddings, code summaries), it uses Google Cloud Vertex AI with the Gemma-2-9b-it model, providing high-quality text generation through Google's managed infrastructure. 
-
-With this MCP server, you can <b>scrape anything</b> and then <b>use that knowledge anywhere</b> for RAG.
+A fork of [Crawl4AI](https://github.com/coleam00/mcp-crawl4ai-rag/tree/main). This implementation uses the local BAAI-bge-large-en-v1.5 model for embeddings (1024 dimensions) instead of OpenAI's embedding API, providing better privacy and eliminating API costs for embedding generation.
 
 ## Overview
 
@@ -126,13 +124,8 @@ TRANSPORT=sse
 # Local BGE Model Configuration (currently points to path within Docker)
 BGE_MODEL_PATH=/app/models/models--BAAI--bge-large-en-v1.5/snapshots
 
-# Google Cloud Vertex AI Configuration for LLM features
-GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
-GOOGLE_CLOUD_REGION=us-central1
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
-
-# Model choice for summaries and contextual embeddings (default: gemma-2-9b-it)
-MODEL_CHOICE=gemma-2-9b-it
+# LLM for summaries and contextual embeddings
+MODEL_CHOICE=gemini-2.5-flash-lite
 
 # RAG Strategies (set to "true" or "false", default to "false")
 USE_CONTEXTUAL_EMBEDDINGS=false
@@ -239,23 +232,11 @@ Once you have the server running with SSE transport, you can connect to it using
 }
 ```
 
-> **Note for Windsurf users**: Use `serverUrl` instead of `url` in your configuration:
-> ```json
-> {
->   "mcpServers": {
->     "crawl4ai-rag": {
->       "transport": "sse",
->       "serverUrl": "http://localhost:8051/sse"
->     }
->   }
-> }
-> ```
->
 > **Note for Docker users**: Use `host.docker.internal` instead of `localhost` if your client is running in a different container. This will apply if you are using this MCP server within n8n!
 
 > **Note for Claude Code users**: 
 ```
-claude mcp add-json crawl4ai-rag '{"type":"http","url":"http://localhost:8051/sse"}' --scope user
+claude mcp add crawl4ai-rag --transport sse http://localhost:8051/sse
 ```
 
 ### Stdio Configuration

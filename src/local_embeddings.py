@@ -28,7 +28,7 @@ class LocalEmbeddingService:
         # Determine model path
         if model_path is None:
             model_path = os.getenv("BGE_MODEL_PATH")
-            
+
             if model_path is None:
                 raise ValueError("BGE_MODEL_PATH environment variable must be set")
 

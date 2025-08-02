@@ -2,3 +2,11 @@ crawl4ai_mcp.egg-info
 __pycache__
 .venv
 .env
+*.pyc
+.git
+test_*.py
+README.md
+CLAUDE.md
+SECURITY_FIXES_SUMMARY.md
+uv.lock
+crawled_pages.sql

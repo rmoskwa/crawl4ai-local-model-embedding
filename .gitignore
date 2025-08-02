@@ -11,3 +11,4 @@ gen-lang-client-*.json
 *-service-account-key.json
 service-account*.json 
 uv.lock
+test*.py

@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import concurrent.futures
 
 
@@ -40,24 +41,23 @@ from utils import (  # noqa: E402
     extract_code_blocks,
     generate_code_example_summary,
     add_code_examples_to_supabase,
+    add_api_references_to_supabase,
     update_source_info,
     extract_source_summary,
     analyze_content_distribution,
     create_combined_code_block,
     # GitHub utilities (API-based)
     parse_github_url,
-    get_repository_tree,
-    get_file_content,
-    filter_crawlable_files,
     extract_language_metadata,
     process_notebook_as_script,
-    SKIP_EXTENSIONS,
-    # Local git operations
     clone_github_repository,
     get_local_file_tree,
     read_local_file_content,
     cleanup_temp_directory,
     create_temp_directory,
+    # API extraction utilities
+    extract_api_references,
+    detect_pulseq_version,
     # LLM error handling
     LLMProcessingError,
 )
@@ -356,13 +356,15 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
             # PDF-specific configuration
             pdf_crawler_strategy = PDFCrawlerStrategy()
             pdf_scraping_strategy = PDFContentScrapingStrategy()
-            
+
             # Use PDF-specific crawler and scraping strategy
-            async with AsyncWebCrawler(crawler_strategy=pdf_crawler_strategy) as pdf_crawler:
+            async with AsyncWebCrawler(
+                crawler_strategy=pdf_crawler_strategy
+            ) as pdf_crawler:
                 run_config = CrawlerRunConfig(
-                    cache_mode=CacheMode.BYPASS, 
+                    cache_mode=CacheMode.BYPASS,
                     stream=False,
-                    scraping_strategy=pdf_scraping_strategy
+                    scraping_strategy=pdf_scraping_strategy,
                 )
                 result = await pdf_crawler.arun(url=url, config=run_config)
         else:
@@ -847,7 +849,9 @@ async def smart_crawl_url(
                 "crawl_type": crawl_type,
                 "pages_crawled": len(crawl_results),
                 "chunks_stored": chunk_count,
-                "code_examples_stored": len(code_examples) if extract_code_examples_enabled else 0,
+                "code_examples_stored": len(code_examples)
+                if extract_code_examples_enabled
+                else 0,
                 "code_examples_message": code_examples_msg,
                 "sources_updated": len(source_content_map),
                 "urls_crawled": [doc["url"] for doc in crawl_results][:5]
@@ -1273,19 +1277,21 @@ async def crawl_pdf_file(url: str) -> List[Dict[str, Any]]:
     """
     pdf_crawler_strategy = PDFCrawlerStrategy()
     pdf_scraping_strategy = PDFContentScrapingStrategy()
-    
+
     async with AsyncWebCrawler(crawler_strategy=pdf_crawler_strategy) as pdf_crawler:
         crawl_config = CrawlerRunConfig(
             cache_mode=CacheMode.BYPASS,
             stream=False,
-            scraping_strategy=pdf_scraping_strategy
+            scraping_strategy=pdf_scraping_strategy,
         )
-        
+
         result = await pdf_crawler.arun(url=url, config=crawl_config)
         if result.markdown:  # Check for markdown content regardless of success flag
             return [{"url": url, "markdown": result.markdown}]
         else:
-            print(f"Failed to crawl PDF {url}: {result.error_message if result.error_message else 'No content extracted'}")
+            print(
+                f"Failed to crawl PDF {url}: {result.error_message if result.error_message else 'No content extracted'}"
+            )
             return []
 
 
@@ -1306,9 +1312,9 @@ async def crawl_batch(
     # Separate PDFs from regular URLs
     pdf_urls = [url for url in urls if is_pdf(url)]
     web_urls = [url for url in urls if not is_pdf(url)]
-    
+
     results = []
-    
+
     # Handle regular web URLs
     if web_urls:
         crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, stream=False)
@@ -1321,17 +1327,19 @@ async def crawl_batch(
         web_results = await crawler.arun_many(
             urls=web_urls, config=crawl_config, dispatcher=dispatcher
         )
-        results.extend([
-            {"url": r.url, "markdown": r.markdown}
-            for r in web_results
-            if r.success and r.markdown
-        ])
-    
+        results.extend(
+            [
+                {"url": r.url, "markdown": r.markdown}
+                for r in web_results
+                if r.success and r.markdown
+            ]
+        )
+
     # Handle PDF URLs
     for pdf_url in pdf_urls:
         pdf_results = await crawl_pdf_file(pdf_url)
         results.extend(pdf_results)
-    
+
     return results
 
 
@@ -1380,7 +1388,7 @@ async def crawl_recursive_internal_links(
         # Separate PDFs from regular URLs for this batch
         pdf_urls = [url for url in urls_to_crawl if is_pdf(url)]
         web_urls = [url for url in urls_to_crawl if not is_pdf(url)]
-        
+
         # Process web URLs
         if web_urls:
             results = await crawler.arun_many(
@@ -1388,7 +1396,7 @@ async def crawl_recursive_internal_links(
             )
         else:
             results = []
-            
+
         # Process PDF URLs
         for pdf_url in pdf_urls:
             pdf_results = await crawl_pdf_file(pdf_url)
@@ -1400,10 +1408,13 @@ async def crawl_recursive_internal_links(
                         self.url = url
                         self.markdown = markdown
                         self.success = success
-                        self.links = {"internal": [], "external": []}  # PDFs don't have links to follow
-                
+                        self.links = {
+                            "internal": [],
+                            "external": [],
+                        }  # PDFs don't have links to follow
+
                 results.append(MockResult(pdf_result["url"], pdf_result["markdown"]))
-        
+
         next_level_urls = set()
 
         for result in results:
@@ -1413,7 +1424,7 @@ async def crawl_recursive_internal_links(
             if result.success and result.markdown:
                 results_all.append({"url": result.url, "markdown": result.markdown})
                 # Only follow links for non-PDF results
-                if hasattr(result, 'links') and result.links and not is_pdf(result.url):
+                if hasattr(result, "links") and result.links and not is_pdf(result.url):
                     for link in result.links.get("internal", []):
                         next_url = normalize_url(link["href"])
                         if next_url not in visited:
@@ -1428,52 +1439,53 @@ async def crawl_recursive_internal_links(
 # GitHub Repository Crawling MCP Tools
 # ============================================================================
 
+
 @mcp.tool()
 async def analyze_github_repo(ctx: Context, github_url: str) -> str:
     """
     Analyze a GitHub repository structure using local cloning and return crawlable files information.
-    
+
     This tool clones the repository locally, analyzes the file structure, filters out binary/data files,
     and provides a summary of crawlable content organized by file type and directory.
-    
+
     Args:
         ctx: The MCP server provided context
         github_url: GitHub repository URL (e.g., "https://github.com/pulseq/pulseq")
-        
+
     Returns:
         JSON string with repository analysis and crawlable files summary
     """
     temp_dir = None
-    
+
     try:
         # Parse GitHub URL
         owner, repo = parse_github_url(github_url)
-        
+
         # Create temporary directory and clone repository
         temp_dir = create_temp_directory()
         repo_path = clone_github_repository(owner, repo, temp_dir)
-        
+
         # Get local file tree and skip report
         crawlable_files, skip_report = get_local_file_tree(repo_path)
-        
+
         # Organize files by extension and directory
         files_by_extension = {}
         files_by_directory = {}
-        
+
         for file_info in crawlable_files:
             ext = file_info["extension"]
             directory = file_info["directory"]
-            
+
             # Group by extension
             if ext not in files_by_extension:
                 files_by_extension[ext] = []
             files_by_extension[ext].append(file_info)
-            
+
             # Group by directory
             if directory not in files_by_directory:
                 files_by_directory[directory] = []
             files_by_directory[directory].append(file_info)
-        
+
         # Create summary
         summary = {
             "repository": f"{owner}/{repo}",
@@ -1482,14 +1494,16 @@ async def analyze_github_repo(ctx: Context, github_url: str) -> str:
                 ext: {
                     "count": len(files),
                     "total_size": sum(f["size"] for f in files),
-                    "examples": [f["path"] for f in files[:3]]  # Show first 3 as examples
+                    "examples": [
+                        f["path"] for f in files[:3]
+                    ],  # Show first 3 as examples
                 }
                 for ext, files in files_by_extension.items()
             },
             "files_by_directory": {
                 directory: {
                     "count": len(files),
-                    "extensions": list(set(f["extension"] for f in files))
+                    "extensions": list(set(f["extension"] for f in files)),
                 }
                 for directory, files in files_by_directory.items()
                 if directory  # Skip root directory
@@ -1497,19 +1511,21 @@ async def analyze_github_repo(ctx: Context, github_url: str) -> str:
             "skipped_files": {
                 "extensions": skip_report,
                 "total_skipped": sum(skip_report.values()),
-                "skipped_extensions": list(skip_report.keys())
+                "skipped_extensions": list(skip_report.keys()),
             },
-            "analysis_method": "local_clone"
+            "analysis_method": "local_clone",
         }
-        
+
         return json.dumps(summary, indent=2)
-        
+
     except Exception as e:
-        return json.dumps({
-            "error": f"Failed to analyze repository: {str(e)}",
-            "repository": github_url,
-            "analysis_method": "local_clone"
-        })
+        return json.dumps(
+            {
+                "error": f"Failed to analyze repository: {str(e)}",
+                "repository": github_url,
+                "analysis_method": "local_clone",
+            }
+        )
     finally:
         # Always clean up temporary directory
         if temp_dir:
@@ -1518,106 +1534,121 @@ async def analyze_github_repo(ctx: Context, github_url: str) -> str:
 
 @mcp.tool()
 async def crawl_github_repo(
-    ctx: Context, 
-    github_url: str, 
-    file_extensions: str = "all",
-    max_files: int = 100
+    ctx: Context, github_url: str, file_extensions: str = "all", max_files: int = 100
 ) -> str:
     """
     Crawl a GitHub repository using local cloning and store selected files in Supabase.
-    
-    This tool clones the repository locally, processes files with appropriate metadata, 
-    and stores them in both crawled_pages and code_examples tables. This approach 
+
+    This tool clones the repository locally, processes files with appropriate metadata,
+    and stores them in both crawled_pages and code_examples tables. This approach
     handles large files that may exceed GitHub API limits.
-    
+
     Args:
         ctx: The MCP server provided context
         github_url: GitHub repository URL (e.g., "https://github.com/pulseq/pulseq")
         file_extensions: Comma-separated list of extensions to crawl (e.g., ".m,.py,.md") or "all"
         max_files: Maximum number of files to crawl (default: 100)
-        
+
     Returns:
         JSON string with crawling results and statistics
     """
     supabase_client: Client = ctx.request_context.lifespan_context.supabase_client
     temp_dir = None
-    
+
     try:
         # Parse GitHub URL
         owner, repo = parse_github_url(github_url)
-        
+
+        # Define source_id early for use in API extraction
+        source_id = f"github.com/{owner}/{repo}"
+
         # Create temporary directory and clone repository
         temp_dir = create_temp_directory()
         repo_path = clone_github_repository(owner, repo, temp_dir)
-        
+
         # Get local file tree and filter crawlable files
         crawlable_files, skip_report = get_local_file_tree(repo_path)
-        
+
         # Filter by requested extensions if not "all"
         if file_extensions.lower() != "all":
-            requested_extensions = [ext.strip().lower() for ext in file_extensions.split(",")]
+            requested_extensions = [
+                ext.strip().lower() for ext in file_extensions.split(",")
+            ]
             crawlable_files = [
-                f for f in crawlable_files 
+                f
+                for f in crawlable_files
                 if f["extension"].lower() in requested_extensions
             ]
-        
+
         # Track files skipped due to max file limit
         total_eligible_files = len(crawlable_files)
         files_skipped_by_limit = 0
-        
+
         # Limit number of files
         if len(crawlable_files) > max_files:
             files_skipped_by_limit = len(crawlable_files) - max_files
             crawlable_files = crawlable_files[:max_files]
-            
+
         # Initialize collections for batch processing
         doc_urls = []
         doc_chunk_numbers = []
         doc_contents = []
         doc_metadatas = []
-        
+
         code_urls = []
         code_chunk_numbers = []
         code_examples = []
         code_summaries = []
         code_metadatas = []
-        
+
+        # API references collections
+        api_names = []
+        api_languages = []
+        api_signatures = []
+        api_descriptions = []
+        api_parameters = []
+        api_returns = []
+        api_source_ids = []
+        api_pulseq_versions = []
+
         processed_files = 0
         errors = []
-        
+
         # Initialize LLM failure tracking
         llm_failures = {
             "api_400_errors": [],
             "rate_limit_errors": [],
             "timeout_errors": [],
             "source_summary_errors": [],
-            "other_llm_errors": []
+            "other_llm_errors": [],
         }
-        
+
         # Process files from local repository
         for file_info in crawlable_files:
             try:
                 # Read file content from local repository
                 file_data = read_local_file_content(file_info["full_path"])
-                
+
                 if file_data.get("is_binary") or not file_data.get("decoded_content"):
                     continue
-                    
+
                 content = file_data["decoded_content"]
-                
+
                 # Create GitHub file URL for reference (use HEAD to avoid hardcoded branch)
-                github_file_url = f"https://github.com/{owner}/{repo}/blob/HEAD/{file_info['path']}"
-                
+                github_file_url = (
+                    f"https://github.com/{owner}/{repo}/blob/HEAD/{file_info['path']}"
+                )
+
                 # Special handling for PDF files
                 if file_info["extension"] == ".pdf":
                     # Use existing PDF crawling functionality via raw GitHub URL
                     raw_file_url = f"https://github.com/{owner}/{repo}/raw/HEAD/{file_info['path']}"
                     pdf_results = await crawl_pdf_file(raw_file_url)
-                    
+
                     if pdf_results:
                         for pdf_result in pdf_results:
                             pdf_content = pdf_result["markdown"]
-                            
+
                             # Create PDF-specific metadata
                             pdf_metadata = {
                                 "url": github_file_url,
@@ -1637,37 +1668,48 @@ async def crawl_github_repo(
                                 "file_category": "pdf_document",
                                 "commit_sha": "",  # Not available from local clone
                                 "language": "pdf",
-                                "content_type": "document"
+                                "content_type": "document",
                             }
-                            
+
                             # Add to documents collection
                             doc_urls.append(github_file_url)
                             doc_chunk_numbers.append(0)
                             doc_contents.append(pdf_content)
                             doc_metadatas.append(pdf_metadata)
-                    
+
                     processed_files += 1
                     await asyncio.sleep(0.05)
                     continue
-                
+
                 # Special handling for Jupyter notebooks
                 if file_info["extension"] == ".ipynb":
                     # Process notebook as script
-                    combined_code, context, notebook_metadata = process_notebook_as_script(content, file_info["path"])
-                    
+                    combined_code, context, notebook_metadata = (
+                        process_notebook_as_script(content, file_info["path"])
+                    )
+
                     if combined_code:
                         # Use combined code as content and treat according to notebook language
                         content_to_store = combined_code
-                        lang_metadata = extract_language_metadata(combined_code, f"{file_info['path']}_combined.{notebook_metadata.get('language', 'py')}")
-                        
+                        lang_metadata = extract_language_metadata(
+                            combined_code,
+                            f"{file_info['path']}_combined.{notebook_metadata.get('language', 'py')}",
+                        )
+
                         # Add notebook-specific metadata
-                        lang_metadata.update({
-                            "notebook_language": notebook_metadata.get("language", "python"),
-                            "notebook_context": context,
-                            "cell_count": notebook_metadata.get("cell_count", 0),
-                            "code_cells": notebook_metadata.get("code_cells", 0),
-                            "context_cells": notebook_metadata.get("context_cells", 0)
-                        })
+                        lang_metadata.update(
+                            {
+                                "notebook_language": notebook_metadata.get(
+                                    "language", "python"
+                                ),
+                                "notebook_context": context,
+                                "cell_count": notebook_metadata.get("cell_count", 0),
+                                "code_cells": notebook_metadata.get("code_cells", 0),
+                                "context_cells": notebook_metadata.get(
+                                    "context_cells", 0
+                                ),
+                            }
+                        )
                     else:
                         # If no code, store the context as content
                         content_to_store = context
@@ -1675,8 +1717,10 @@ async def crawl_github_repo(
                 else:
                     # Regular file processing
                     content_to_store = content
-                    lang_metadata = extract_language_metadata(content, file_info["path"])
-                
+                    lang_metadata = extract_language_metadata(
+                        content, file_info["path"]
+                    )
+
                 # Create base metadata following existing schema
                 base_metadata = {
                     # Existing core fields
@@ -1689,7 +1733,6 @@ async def crawl_github_repo(
                     "word_count": len(content_to_store.split()),
                     "chunk_index": 0,
                     "contextual_embedding": False,
-                    
                     # GitHub-specific extensions
                     "source_type": "github",
                     "repo_owner": owner,
@@ -1698,31 +1741,42 @@ async def crawl_github_repo(
                     "file_extension": file_info["extension"],
                     "file_category": "repository_file",
                     "commit_sha": "",  # Not available from local clone
-                    
                     # Language-specific metadata
-                    **lang_metadata
+                    **lang_metadata,
                 }
-                
+
                 # Add to documents collection
                 doc_urls.append(github_file_url)
                 doc_chunk_numbers.append(0)
                 doc_contents.append(content_to_store)
                 doc_metadatas.append(base_metadata.copy())
-                
+
                 # If it's a code file or notebook with code, also add to code examples
-                is_code_file = (
-                    file_info["extension"] in [".m", ".py", ".cpp", ".c", ".h", ".js", ".ts"] or
-                    (file_info["extension"] == ".ipynb" and lang_metadata.get("language") != "jupyter")
+                is_code_file = file_info["extension"] in [
+                    ".m",
+                    ".py",
+                    ".cpp",
+                    ".c",
+                    ".h",
+                    ".js",
+                    ".ts",
+                ] or (
+                    file_info["extension"] == ".ipynb"
+                    and lang_metadata.get("language") != "jupyter"
                 )
-                
+
+                print(
+                    f"DEBUG: Processing {file_info['path']} - Extension: {file_info['extension']}, Language: {lang_metadata.get('language', 'unknown')}, Is code file: {is_code_file}"
+                )
+
                 if is_code_file:
                     # Generate code summary with error tracking
                     try:
                         code_summary = generate_code_example_summary(
-                            content_to_store, 
-                            content_to_store[:500], 
+                            content_to_store,
+                            content_to_store[:500],
                             content_to_store[-500:],
-                            file_path=file_info['path']
+                            file_path=file_info["path"],
                         )
                     except LLMProcessingError as e:
                         # Track LLM-specific errors
@@ -1735,38 +1789,79 @@ async def crawl_github_repo(
                             llm_failures["timeout_errors"].append(error_dict)
                         else:
                             llm_failures["other_llm_errors"].append(error_dict)
-                        
+
                         # Use fallback summary
                         code_summary = "Code example for demonstration purposes."
-                    
+
                     # Code-specific metadata
                     code_metadata = base_metadata.copy()
-                    code_metadata.update({
-                        "language": lang_metadata.get("language", "unknown"),
-                        "char_count": len(content_to_store),
-                        "word_count": len(content_to_store.split()),
-                        "chunk_index": 0
-                    })
-                    
+                    code_metadata.update(
+                        {
+                            "language": lang_metadata.get("language", "unknown"),
+                            "char_count": len(content_to_store),
+                            "word_count": len(content_to_store.split()),
+                            "chunk_index": 0,
+                        }
+                    )
+
                     code_urls.append(github_file_url)
                     code_chunk_numbers.append(0)
                     code_examples.append(content_to_store)
                     code_summaries.append(code_summary)
                     code_metadatas.append(code_metadata)
-                
+
+                    # Extract API references for code files
+                    try:
+                        api_refs = extract_api_references(
+                            content_to_store, base_metadata, file_info, github_url
+                        )
+                        if api_refs:
+                            print(
+                                f"DEBUG: Found {len(api_refs)} API references in {file_info['path']}"
+                            )
+                            for api_ref in api_refs:
+                                api_names.append(api_ref["name"])
+                                api_languages.append(api_ref["language"])
+                                api_signatures.append(api_ref["signature"])
+                                api_descriptions.append(api_ref["description"])
+                                api_parameters.append(api_ref["parameters"])
+                                api_returns.append(api_ref["returns"])
+                                api_source_ids.append(source_id)
+                                api_pulseq_versions.append(
+                                    api_ref.get("pulseq_version", "unknown")
+                                )
+                        else:
+                            print(
+                                f"DEBUG: No API references found in {file_info['path']} (language: {lang_metadata.get('language', 'unknown')})"
+                            )
+                    except Exception as e:
+                        error_msg = f"Error extracting API references from {file_info['path']}: {str(e)}"
+                        print(f"DEBUG: {error_msg}")
+                        errors.append(error_msg)
+
                 processed_files += 1
-                
+
                 # Add brief delay between file processing to reduce system load
                 await asyncio.sleep(0.05)
-                
+
             except Exception as e:
                 errors.append(f"Error processing {file_info['path']}: {str(e)}")
                 continue
-        
-        # Update source info FIRST (before inserting documents with foreign key references)
-        source_id = f"github.com/{owner}/{repo}"
+
+        # Detect Pulseq version for API references
+        try:
+            pulseq_version = detect_pulseq_version(repo_path, source_id)
+            # Update all API reference versions with detected version
+            api_pulseq_versions = [
+                pulseq_version if version == "unknown" else version
+                for version in api_pulseq_versions
+            ]
+        except Exception as e:
+            errors.append(f"Error detecting Pulseq version: {str(e)}")
+            # Keep existing version values (may be 'unknown')
+
         total_content = " ".join(doc_contents)
-        
+
         # Generate source summary with error tracking
         try:
             # Use parallel processing for source summary generation (matching smart_crawl_url pattern)
@@ -1778,13 +1873,13 @@ async def crawl_github_repo(
                         source_summary_args,
                     )
                 )
-            
+
             source_summary = source_summaries[0]
         except LLMProcessingError as e:
             # Track source summary LLM errors
             error_dict = e.to_dict()
             llm_failures["source_summary_errors"].append(error_dict)
-            
+
             # Use fallback summary
             source_summary = f"Content from {source_id}"
         except Exception as e:
@@ -1794,28 +1889,30 @@ async def crawl_github_repo(
                 "error": f"Source summary generation failed: {str(e)}",
                 "error_type": "source_summary_unknown",
                 "size": len(total_content),
-                "operation": "source_summary"
+                "operation": "source_summary",
             }
             llm_failures["source_summary_errors"].append(error_dict)
-            
+
             # Use fallback summary
             source_summary = f"Content from {source_id}"
-        
-        update_source_info(supabase_client, source_id, source_summary, len(total_content.split()))
-        
+
+        update_source_info(
+            supabase_client, source_id, source_summary, len(total_content.split())
+        )
+
         # Store in Supabase AFTER source exists
         batch_size = 10
         if doc_urls:
             await add_documents_to_supabase(
                 supabase_client,
                 doc_urls,
-                doc_chunk_numbers, 
+                doc_chunk_numbers,
                 doc_contents,
                 doc_metadatas,
                 {url: content for url, content in zip(doc_urls, doc_contents)},
-                batch_size=batch_size
+                batch_size=batch_size,
             )
-            
+
         if code_urls:
             await add_code_examples_to_supabase(
                 supabase_client,
@@ -1824,10 +1921,33 @@ async def crawl_github_repo(
                 code_examples,
                 code_summaries,
                 code_metadatas,
-                batch_size=batch_size
+                batch_size=batch_size,
             )
-        
+
+        # Store API references in Supabase
+        if api_names:
+            print(f"DEBUG: Storing {len(api_names)} API references in Supabase")
+            await add_api_references_to_supabase(
+                supabase_client,
+                api_names,
+                api_languages,
+                api_signatures,
+                api_descriptions,
+                api_parameters,
+                api_returns,
+                api_source_ids,
+                api_pulseq_versions,
+                batch_size=batch_size,
+            )
+            print(f"DEBUG: Successfully stored {len(api_names)} API references")
+        else:
+            print("DEBUG: No API references to store")
+
         # Prepare result with LLM failure tracking
+        print(
+            f"DEBUG: Final counts - Documents: {len(doc_urls)}, Code examples: {len(code_urls)}, API references: {len(api_names)}"
+        )
+
         result = {
             "success": True,
             "repository": f"{owner}/{repo}",
@@ -1835,17 +1955,18 @@ async def crawl_github_repo(
             "processed_files": processed_files,
             "documents_stored": len(doc_urls),
             "code_examples_stored": len(code_urls),
+            "api_references_stored": len(api_names),
             "files_by_extension": {},
             "skipped_files": {
                 "by_extension": skip_report,
                 "by_extension_total": sum(skip_report.values()),
                 "by_file_limit": files_skipped_by_limit,
-                "total_skipped": sum(skip_report.values()) + files_skipped_by_limit
+                "total_skipped": sum(skip_report.values()) + files_skipped_by_limit,
             },
             "errors": errors,
-            "crawl_method": "local_clone"
+            "crawl_method": "local_clone",
         }
-        
+
         # Add LLM failure information if any failures occurred
         total_llm_failures = sum(len(failures) for failures in llm_failures.values())
         if total_llm_failures > 0:
@@ -1861,54 +1982,64 @@ async def crawl_github_repo(
                     "rate_limit_count": len(llm_failures["rate_limit_errors"]),
                     "timeout_count": len(llm_failures["timeout_errors"]),
                     "source_summary_count": len(llm_failures["source_summary_errors"]),
-                    "other_count": len(llm_failures["other_llm_errors"])
-                }
+                    "other_count": len(llm_failures["other_llm_errors"]),
+                },
             }
-        
+
         # Add extension breakdown
         for file_info in crawlable_files[:processed_files]:
             ext = file_info["extension"]
             if ext not in result["files_by_extension"]:
                 result["files_by_extension"][ext] = 0
             result["files_by_extension"][ext] += 1
-            
+
         return json.dumps(result, indent=2)
-        
+
     except subprocess.CalledProcessError as e:
-        return json.dumps({
-            "error": f"Git operation failed: {str(e)}",
-            "error_type": "git_error",
-            "repository": github_url,
-            "crawl_method": "local_clone"
-        })
+        return json.dumps(
+            {
+                "error": f"Git operation failed: {str(e)}",
+                "error_type": "git_error",
+                "repository": github_url,
+                "crawl_method": "local_clone",
+            }
+        )
     except subprocess.TimeoutExpired as e:
-        return json.dumps({
-            "error": f"Git operation timed out: {str(e)}",
-            "error_type": "timeout_error", 
-            "repository": github_url,
-            "crawl_method": "local_clone"
-        })
+        return json.dumps(
+            {
+                "error": f"Git operation timed out: {str(e)}",
+                "error_type": "timeout_error",
+                "repository": github_url,
+                "crawl_method": "local_clone",
+            }
+        )
     except PermissionError as e:
-        return json.dumps({
-            "error": f"Permission denied during file operations: {str(e)}",
-            "error_type": "permission_error",
-            "repository": github_url,
-            "crawl_method": "local_clone"
-        })
+        return json.dumps(
+            {
+                "error": f"Permission denied during file operations: {str(e)}",
+                "error_type": "permission_error",
+                "repository": github_url,
+                "crawl_method": "local_clone",
+            }
+        )
     except ValueError as e:
-        return json.dumps({
-            "error": f"Invalid input parameters: {str(e)}",
-            "error_type": "validation_error",
-            "repository": github_url,
-            "crawl_method": "local_clone"
-        })
+        return json.dumps(
+            {
+                "error": f"Invalid input parameters: {str(e)}",
+                "error_type": "validation_error",
+                "repository": github_url,
+                "crawl_method": "local_clone",
+            }
+        )
     except Exception as e:
-        return json.dumps({
-            "error": f"Unexpected error: {str(e)}",
-            "error_type": "unknown_error",
-            "repository": github_url,
-            "crawl_method": "local_clone"
-        })
+        return json.dumps(
+            {
+                "error": f"Unexpected error: {str(e)}",
+                "error_type": "unknown_error",
+                "repository": github_url,
+                "crawl_method": "local_clone",
+            }
+        )
     finally:
         # Always clean up temporary directory
         if temp_dir:

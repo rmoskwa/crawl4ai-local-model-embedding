@@ -415,7 +415,7 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
             )
 
             # Add documentation chunks to Supabase (AFTER source exists)
-            add_documents_to_supabase(
+            await add_documents_to_supabase(
                 supabase_client,
                 urls,
                 chunk_numbers,
@@ -523,7 +523,7 @@ async def crawl_single_page(ctx: Context, url: str) -> str:
                             code_metadatas.append(code_meta)
 
                     # Add code examples to Supabase
-                    add_code_examples_to_supabase(
+                    await add_code_examples_to_supabase(
                         supabase_client,
                         code_urls,
                         code_chunk_numbers,

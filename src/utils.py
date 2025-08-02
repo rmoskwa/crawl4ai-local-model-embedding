@@ -6,6 +6,10 @@ import os
 import concurrent.futures
 import asyncio
 import gc
+import subprocess
+import tempfile
+import shutil
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from supabase import create_client, Client
 from urllib.parse import urlparse
@@ -24,6 +28,34 @@ except ImportError as e:
     LOCAL_EMBEDDINGS_AVAILABLE = False
 
     # Create safe fallback functions that return empty vectors
+
+
+# ============================================================================
+# Custom Exception Classes for LLM Error Tracking
+# ============================================================================
+
+class LLMProcessingError(Exception):
+    """Exception raised when LLM processing fails with specific error details."""
+    
+    def __init__(self, message: str, file_path: str = None, error_type: str = "unknown", file_size: int = None, **kwargs):
+        super().__init__(message)
+        self.message = message
+        self.file_path = file_path
+        self.error_type = error_type  # "api_400", "timeout", "content_filter", etc.
+        self.file_size = file_size
+        self.additional_info = kwargs
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert error to dictionary for reporting."""
+        return {
+            "file": self.file_path,
+            "error": self.message,
+            "error_type": self.error_type,
+            "size": self.file_size,
+            **self.additional_info
+        }
+
+
     def create_embedding(text):
         print("Warning: Local embeddings not available, returning empty vector")
         return [0.0] * 1024  # BGE model returns 1024-dimensional vectors
@@ -615,7 +647,7 @@ def extract_text_between_code_blocks(
 
 
 def generate_code_example_summary(
-    code: str, context_before: str, context_after: str, is_code_dominated: bool = False
+    code: str, context_before: str, context_after: str, is_code_dominated: bool = False, file_path: str = None
 ) -> str:
     """
     Generate a summary for a code example using its surrounding context.
@@ -625,9 +657,13 @@ def generate_code_example_summary(
         context_before: Context before the code
         context_after: Context after the code
         is_code_dominated: Whether this is code-dominated content (increases context limit)
+        file_path: Optional file path for error tracking
 
     Returns:
         A summary of what the code example demonstrates
+        
+    Raises:
+        LLMProcessingError: When LLM processing fails with detailed error information
     """
     # Dynamic context limits based on content type
     context_limit = 2000 if is_code_dominated else 500
@@ -673,9 +709,54 @@ def generate_code_example_summary(
 
         return response.strip()
 
+    except requests.exceptions.HTTPError as e:
+        # Specific handling for HTTP errors from Google AI API
+        if e.response.status_code == 400:
+            error_msg = f"Google AI API 400 error - likely content safety filter or invalid request"
+            print(f"Error generating code example summary for {file_path or 'unknown file'}: {error_msg}")
+            raise LLMProcessingError(
+                error_msg,
+                file_path=file_path,
+                error_type="api_400",
+                file_size=len(code),
+                extension=file_path.split('.')[-1] if file_path and '.' in file_path else "unknown"
+            )
+        elif e.response.status_code == 429:
+            error_msg = f"Google AI API rate limit exceeded"
+            print(f"Error generating code example summary for {file_path or 'unknown file'}: {error_msg}")
+            raise LLMProcessingError(
+                error_msg,
+                file_path=file_path,
+                error_type="rate_limit",
+                file_size=len(code)
+            )
+        else:
+            error_msg = f"Google AI API HTTP {e.response.status_code} error"
+            print(f"Error generating code example summary for {file_path or 'unknown file'}: {error_msg}")
+            raise LLMProcessingError(
+                error_msg,
+                file_path=file_path,
+                error_type=f"api_{e.response.status_code}",
+                file_size=len(code)
+            )
+    except requests.exceptions.Timeout as e:
+        error_msg = f"Google AI API timeout"
+        print(f"Error generating code example summary for {file_path or 'unknown file'}: {error_msg}")
+        raise LLMProcessingError(
+            error_msg,
+            file_path=file_path,
+            error_type="timeout",
+            file_size=len(code)
+        )
     except Exception as e:
-        print(f"Error generating code example summary: {e}")
-        return "Code example for demonstration purposes."
+        error_msg = f"Unexpected error during code summary generation: {str(e)}"
+        print(f"Error generating code example summary for {file_path or 'unknown file'}: {error_msg}")
+        raise LLMProcessingError(
+            error_msg,
+            file_path=file_path,
+            error_type="unknown",
+            file_size=len(code)
+        )
 
 
 async def add_code_examples_to_supabase(
@@ -866,6 +947,9 @@ def extract_source_summary(source_id: str, content: str, max_length: int = 500) 
 
     Returns:
         A summary string
+        
+    Raises:
+        LLMProcessingError: When LLM processing fails with detailed error information
     """
     # Default summary if we can't extract anything meaningful
     default_summary = f"Content from {source_id}"
@@ -899,11 +983,58 @@ The above content is from the documentation for '{source_id}'. Please provide a 
 
         return summary
 
-    except Exception as e:
-        print(
-            f"Error generating summary with LLM for {source_id}: {e}. Using default summary."
+    except requests.exceptions.HTTPError as e:
+        # Specific handling for HTTP errors from Google AI API
+        if e.response.status_code == 400:
+            error_msg = f"Google AI API 400 error during source summary generation"
+            print(f"Error generating source summary for {source_id}: {error_msg}")
+            raise LLMProcessingError(
+                error_msg,
+                file_path=source_id,
+                error_type="api_400",
+                file_size=len(content),
+                operation="source_summary"
+            )
+        elif e.response.status_code == 429:
+            error_msg = f"Google AI API rate limit exceeded during source summary"
+            print(f"Error generating source summary for {source_id}: {error_msg}")
+            raise LLMProcessingError(
+                error_msg,
+                file_path=source_id,
+                error_type="rate_limit",
+                file_size=len(content),
+                operation="source_summary"
+            )
+        else:
+            error_msg = f"Google AI API HTTP {e.response.status_code} error during source summary"
+            print(f"Error generating source summary for {source_id}: {error_msg}")
+            raise LLMProcessingError(
+                error_msg,
+                file_path=source_id,
+                error_type=f"api_{e.response.status_code}",
+                file_size=len(content),
+                operation="source_summary"
+            )
+    except requests.exceptions.Timeout as e:
+        error_msg = f"Google AI API timeout during source summary generation"
+        print(f"Error generating source summary for {source_id}: {error_msg}")
+        raise LLMProcessingError(
+            error_msg,
+            file_path=source_id,
+            error_type="timeout",
+            file_size=len(content),
+            operation="source_summary"
         )
-        return default_summary
+    except Exception as e:
+        error_msg = f"Unexpected error during source summary generation: {str(e)}"
+        print(f"Error generating source summary for {source_id}: {error_msg}")
+        raise LLMProcessingError(
+            error_msg,
+            file_path=source_id,
+            error_type="unknown",
+            file_size=len(content),
+            operation="source_summary"
+        )
 
 
 def search_code_examples(
@@ -1439,3 +1570,194 @@ def extract_notebook_metadata(content: str, file_path: str) -> Dict[str, Any]:
         "context_length": len(context),
         **nb_metadata,
     }
+
+
+# ============================================================================
+# Local Git Operations for GitHub Repository Crawling
+# ============================================================================
+
+def clone_github_repository(owner: str, repo: str, temp_dir: str) -> str:
+    """
+    Clone a GitHub repository to a temporary directory.
+    
+    Args:
+        owner: Repository owner
+        repo: Repository name  
+        temp_dir: Temporary directory path
+        
+    Returns:
+        Path to the cloned repository
+        
+    Raises:
+        ValueError: If owner/repo names are invalid
+        subprocess.CalledProcessError: If git clone fails
+    """
+    # Add input validation to prevent command injection
+    if not re.match(r'^[a-zA-Z0-9\-_.]+$', owner) or not re.match(r'^[a-zA-Z0-9\-_.]+$', repo):
+        raise ValueError("Invalid owner or repository name format")
+    
+    repo_url = f"https://github.com/{owner}/{repo}.git"
+    repo_path = os.path.join(temp_dir, repo)
+    
+    # Ensure repo_path is within temp_dir boundaries
+    temp_dir = os.path.abspath(temp_dir)
+    repo_path = os.path.abspath(repo_path)
+    if not repo_path.startswith(temp_dir):
+        raise ValueError("Repository path outside temporary directory")
+    
+    try:
+        # Use shallow clone to minimize download size and time, with timeout
+        cmd = ["git", "clone", "--depth", "1", repo_url, repo_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)  # 5 minute timeout
+        
+        print(f"Successfully cloned {owner}/{repo} to {repo_path}")
+        return repo_path
+        
+    except subprocess.TimeoutExpired as e:
+        error_msg = f"Git clone timed out for {owner}/{repo}"
+        print(error_msg)
+        raise RuntimeError(error_msg) from e
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to clone {owner}/{repo}: {e.stderr}"
+        print(error_msg)
+        raise RuntimeError(error_msg) from e
+
+
+def get_local_file_tree(repo_path: str, max_files: int = 10000) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """
+    Walk through a local repository and get file structure, similar to filter_crawlable_files.
+    
+    Args:
+        repo_path: Path to the local repository
+        max_files: Maximum number of files to process (default: 10000)
+        
+    Returns:
+        Tuple of (crawlable_files, skip_report)
+    """
+    crawlable_files = []
+    skip_report = {}
+    file_count = 0
+    
+    repo_path_obj = Path(repo_path)
+    
+    # Walk through all files in the repository
+    for file_path in repo_path_obj.rglob("*"):
+        if file_count >= max_files:
+            print(f"Warning: File limit ({max_files}) reached, stopping traversal")
+            skip_report["__truncated__"] = 1  # Indicate truncation occurred
+            break
+            
+        if file_path.is_file():
+            file_count += 1
+            
+            # Get relative path from repo root
+            relative_path = file_path.relative_to(repo_path_obj)
+            
+            # Skip .git directory files
+            if ".git" in relative_path.parts:
+                continue
+                
+            file_name = file_path.name
+            file_ext = file_path.suffix.lower()
+            
+            # Check if file should be skipped
+            if file_ext in SKIP_EXTENSIONS:
+                skip_report[file_ext] = skip_report.get(file_ext, 0) + 1
+                continue
+                
+            # Get file size
+            try:
+                file_size = file_path.stat().st_size
+                # Skip files larger than 10MB to prevent memory issues
+                if file_size > 10 * 1024 * 1024:
+                    skip_report["__large_files__"] = skip_report.get("__large_files__", 0) + 1
+                    continue
+            except OSError:
+                file_size = 0
+                
+            # Add to crawlable files
+            crawlable_files.append({
+                "path": str(relative_path),
+                "name": file_name,
+                "directory": str(relative_path.parent) if relative_path.parent != Path(".") else "",
+                "extension": file_ext,
+                "size": file_size,
+                "full_path": str(file_path)  # Add full path for local reading
+            })
+    
+    return crawlable_files, skip_report
+
+
+def read_local_file_content(file_path: str) -> Dict[str, Any]:
+    """
+    Read content from a local file, similar to get_file_content but for local files.
+    
+    Args:
+        file_path: Full path to the local file
+        
+    Returns:
+        Dictionary containing file content and metadata
+    """
+    try:
+        # Try to read as text with UTF-8 encoding first
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        return {
+            "type": "file",
+            "decoded_content": content,
+            "is_binary": False
+        }
+        
+    except UnicodeDecodeError:
+        # Try with latin-1 encoding as fallback
+        try:
+            with open(file_path, 'r', encoding='latin-1') as f:
+                content = f.read()
+                
+            return {
+                "type": "file", 
+                "decoded_content": content,
+                "is_binary": False
+            }
+        except Exception:
+            # Mark as binary file
+            return {
+                "type": "file",
+                "decoded_content": None,
+                "is_binary": True
+            }
+            
+    except Exception as e:
+        print(f"Error reading file {file_path}: {e}")
+        return {
+            "type": "file",
+            "decoded_content": None,
+            "is_binary": True,
+            "error": str(e)
+        }
+
+
+def cleanup_temp_directory(temp_dir: str) -> None:
+    """
+    Safely clean up a temporary directory.
+    
+    Args:
+        temp_dir: Path to the temporary directory to clean up
+    """
+    try:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            print(f"Cleaned up temporary directory: {temp_dir}")
+    except Exception as e:
+        print(f"Warning: Failed to clean up temporary directory {temp_dir}: {e}")
+
+
+def create_temp_directory() -> str:
+    """
+    Create a temporary directory for git operations.
+    
+    Returns:
+        Path to the created temporary directory
+    """
+    return tempfile.mkdtemp(prefix="github_clone_")

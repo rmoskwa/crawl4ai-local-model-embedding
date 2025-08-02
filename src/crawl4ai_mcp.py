@@ -44,7 +44,7 @@ from utils import (  # noqa: E402
     extract_source_summary,
     analyze_content_distribution,
     create_combined_code_block,
-    # GitHub utilities
+    # GitHub utilities (API-based)
     parse_github_url,
     get_repository_tree,
     get_file_content,
@@ -52,6 +52,14 @@ from utils import (  # noqa: E402
     extract_language_metadata,
     process_notebook_as_script,
     SKIP_EXTENSIONS,
+    # Local git operations
+    clone_github_repository,
+    get_local_file_tree,
+    read_local_file_content,
+    cleanup_temp_directory,
+    create_temp_directory,
+    # LLM error handling
+    LLMProcessingError,
 )
 
 
@@ -1423,9 +1431,9 @@ async def crawl_recursive_internal_links(
 @mcp.tool()
 async def analyze_github_repo(ctx: Context, github_url: str) -> str:
     """
-    Analyze a GitHub repository structure and return crawlable files information.
+    Analyze a GitHub repository structure using local cloning and return crawlable files information.
     
-    This tool fetches the repository structure, filters out binary/data files,
+    This tool clones the repository locally, analyzes the file structure, filters out binary/data files,
     and provides a summary of crawlable content organized by file type and directory.
     
     Args:
@@ -1435,15 +1443,18 @@ async def analyze_github_repo(ctx: Context, github_url: str) -> str:
     Returns:
         JSON string with repository analysis and crawlable files summary
     """
+    temp_dir = None
+    
     try:
         # Parse GitHub URL
         owner, repo = parse_github_url(github_url)
         
-        # Get repository tree
-        tree_data = get_repository_tree(owner, repo)
+        # Create temporary directory and clone repository
+        temp_dir = create_temp_directory()
+        repo_path = clone_github_repository(owner, repo, temp_dir)
         
-        # Filter crawlable files and get skip report
-        crawlable_files, skip_report = filter_crawlable_files(tree_data)
+        # Get local file tree and skip report
+        crawlable_files, skip_report = get_local_file_tree(repo_path)
         
         # Organize files by extension and directory
         files_by_extension = {}
@@ -1487,7 +1498,8 @@ async def analyze_github_repo(ctx: Context, github_url: str) -> str:
                 "extensions": skip_report,
                 "total_skipped": sum(skip_report.values()),
                 "skipped_extensions": list(skip_report.keys())
-            }
+            },
+            "analysis_method": "local_clone"
         }
         
         return json.dumps(summary, indent=2)
@@ -1495,8 +1507,13 @@ async def analyze_github_repo(ctx: Context, github_url: str) -> str:
     except Exception as e:
         return json.dumps({
             "error": f"Failed to analyze repository: {str(e)}",
-            "repository": github_url
+            "repository": github_url,
+            "analysis_method": "local_clone"
         })
+    finally:
+        # Always clean up temporary directory
+        if temp_dir:
+            cleanup_temp_directory(temp_dir)
 
 
 @mcp.tool()
@@ -1507,10 +1524,11 @@ async def crawl_github_repo(
     max_files: int = 100
 ) -> str:
     """
-    Crawl a GitHub repository and store selected files in Supabase.
+    Crawl a GitHub repository using local cloning and store selected files in Supabase.
     
-    This tool fetches content from GitHub repository files, processes them with 
-    appropriate metadata, and stores them in both crawled_pages and code_examples tables.
+    This tool clones the repository locally, processes files with appropriate metadata, 
+    and stores them in both crawled_pages and code_examples tables. This approach 
+    handles large files that may exceed GitHub API limits.
     
     Args:
         ctx: The MCP server provided context
@@ -1522,14 +1540,18 @@ async def crawl_github_repo(
         JSON string with crawling results and statistics
     """
     supabase_client: Client = ctx.request_context.lifespan_context.supabase_client
+    temp_dir = None
     
     try:
         # Parse GitHub URL
         owner, repo = parse_github_url(github_url)
         
-        # Get repository tree and filter crawlable files
-        tree_data = get_repository_tree(owner, repo)
-        crawlable_files, skip_report = filter_crawlable_files(tree_data)
+        # Create temporary directory and clone repository
+        temp_dir = create_temp_directory()
+        repo_path = clone_github_repository(owner, repo, temp_dir)
+        
+        # Get local file tree and filter crawlable files
+        crawlable_files, skip_report = get_local_file_tree(repo_path)
         
         # Filter by requested extensions if not "all"
         if file_extensions.lower() != "all":
@@ -1563,24 +1585,33 @@ async def crawl_github_repo(
         processed_files = 0
         errors = []
         
-        # Process files in batches to avoid API rate limits
+        # Initialize LLM failure tracking
+        llm_failures = {
+            "api_400_errors": [],
+            "rate_limit_errors": [],
+            "timeout_errors": [],
+            "source_summary_errors": [],
+            "other_llm_errors": []
+        }
+        
+        # Process files from local repository
         for file_info in crawlable_files:
             try:
-                # Get file content from GitHub
-                file_data = get_file_content(owner, repo, file_info["path"])
+                # Read file content from local repository
+                file_data = read_local_file_content(file_info["full_path"])
                 
                 if file_data.get("is_binary") or not file_data.get("decoded_content"):
                     continue
                     
                 content = file_data["decoded_content"]
                 
-                # Create GitHub file URL
-                github_file_url = f"https://github.com/{owner}/{repo}/blob/master/{file_info['path']}"
+                # Create GitHub file URL for reference (use HEAD to avoid hardcoded branch)
+                github_file_url = f"https://github.com/{owner}/{repo}/blob/HEAD/{file_info['path']}"
                 
                 # Special handling for PDF files
                 if file_info["extension"] == ".pdf":
-                    # Use existing PDF crawling functionality
-                    raw_file_url = f"https://github.com/{owner}/{repo}/raw/master/{file_info['path']}"
+                    # Use existing PDF crawling functionality via raw GitHub URL
+                    raw_file_url = f"https://github.com/{owner}/{repo}/raw/HEAD/{file_info['path']}"
                     pdf_results = await crawl_pdf_file(raw_file_url)
                     
                     if pdf_results:
@@ -1594,7 +1625,7 @@ async def crawl_github_repo(
                                 "headers": f"PDF: {file_info['path']}",
                                 "char_count": len(pdf_content),
                                 "chunk_size": len(pdf_content),
-                                "crawl_time": "github_api_pdf",
+                                "crawl_time": "github_local_clone",
                                 "word_count": len(pdf_content.split()),
                                 "chunk_index": 0,
                                 "contextual_embedding": False,
@@ -1604,7 +1635,7 @@ async def crawl_github_repo(
                                 "file_path": file_info["path"],
                                 "file_extension": ".pdf",
                                 "file_category": "pdf_document",
-                                "commit_sha": tree_data.get("sha", ""),
+                                "commit_sha": "",  # Not available from local clone
                                 "language": "pdf",
                                 "content_type": "document"
                             }
@@ -1654,7 +1685,7 @@ async def crawl_github_repo(
                     "headers": lang_metadata.get("function_signature", ""),
                     "char_count": len(content_to_store),
                     "chunk_size": len(content_to_store),
-                    "crawl_time": "github_api",
+                    "crawl_time": "github_local_clone",
                     "word_count": len(content_to_store.split()),
                     "chunk_index": 0,
                     "contextual_embedding": False,
@@ -1666,7 +1697,7 @@ async def crawl_github_repo(
                     "file_path": file_info["path"],
                     "file_extension": file_info["extension"],
                     "file_category": "repository_file",
-                    "commit_sha": tree_data.get("sha", ""),
+                    "commit_sha": "",  # Not available from local clone
                     
                     # Language-specific metadata
                     **lang_metadata
@@ -1685,8 +1716,28 @@ async def crawl_github_repo(
                 )
                 
                 if is_code_file:
-                    # Generate code summary
-                    code_summary = generate_code_example_summary(content_to_store, content_to_store[:500], content_to_store[-500:])
+                    # Generate code summary with error tracking
+                    try:
+                        code_summary = generate_code_example_summary(
+                            content_to_store, 
+                            content_to_store[:500], 
+                            content_to_store[-500:],
+                            file_path=file_info['path']
+                        )
+                    except LLMProcessingError as e:
+                        # Track LLM-specific errors
+                        error_dict = e.to_dict()
+                        if e.error_type == "api_400":
+                            llm_failures["api_400_errors"].append(error_dict)
+                        elif e.error_type == "rate_limit":
+                            llm_failures["rate_limit_errors"].append(error_dict)
+                        elif e.error_type == "timeout":
+                            llm_failures["timeout_errors"].append(error_dict)
+                        else:
+                            llm_failures["other_llm_errors"].append(error_dict)
+                        
+                        # Use fallback summary
+                        code_summary = "Code example for demonstration purposes."
                     
                     # Code-specific metadata
                     code_metadata = base_metadata.copy()
@@ -1716,17 +1767,40 @@ async def crawl_github_repo(
         source_id = f"github.com/{owner}/{repo}"
         total_content = " ".join(doc_contents)
         
-        # Use parallel processing for source summary generation (matching smart_crawl_url pattern)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            source_summary_args = [(source_id, total_content)]
-            source_summaries = list(
-                executor.map(
-                    lambda args: extract_source_summary(args[0], args[1]),
-                    source_summary_args,
+        # Generate source summary with error tracking
+        try:
+            # Use parallel processing for source summary generation (matching smart_crawl_url pattern)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                source_summary_args = [(source_id, total_content)]
+                source_summaries = list(
+                    executor.map(
+                        lambda args: extract_source_summary(args[0], args[1]),
+                        source_summary_args,
+                    )
                 )
-            )
+            
+            source_summary = source_summaries[0]
+        except LLMProcessingError as e:
+            # Track source summary LLM errors
+            error_dict = e.to_dict()
+            llm_failures["source_summary_errors"].append(error_dict)
+            
+            # Use fallback summary
+            source_summary = f"Content from {source_id}"
+        except Exception as e:
+            # Track other source summary errors
+            error_dict = {
+                "file": source_id,
+                "error": f"Source summary generation failed: {str(e)}",
+                "error_type": "source_summary_unknown",
+                "size": len(total_content),
+                "operation": "source_summary"
+            }
+            llm_failures["source_summary_errors"].append(error_dict)
+            
+            # Use fallback summary
+            source_summary = f"Content from {source_id}"
         
-        source_summary = source_summaries[0]
         update_source_info(supabase_client, source_id, source_summary, len(total_content.split()))
         
         # Store in Supabase AFTER source exists
@@ -1753,7 +1827,7 @@ async def crawl_github_repo(
                 batch_size=batch_size
             )
         
-        # Prepare result
+        # Prepare result with LLM failure tracking
         result = {
             "success": True,
             "repository": f"{owner}/{repo}",
@@ -1768,8 +1842,28 @@ async def crawl_github_repo(
                 "by_file_limit": files_skipped_by_limit,
                 "total_skipped": sum(skip_report.values()) + files_skipped_by_limit
             },
-            "errors": errors
+            "errors": errors,
+            "crawl_method": "local_clone"
         }
+        
+        # Add LLM failure information if any failures occurred
+        total_llm_failures = sum(len(failures) for failures in llm_failures.values())
+        if total_llm_failures > 0:
+            result["llm_issues"] = {
+                "total_affected_files": total_llm_failures,
+                "api_400_errors": llm_failures["api_400_errors"],
+                "rate_limit_errors": llm_failures["rate_limit_errors"],
+                "timeout_errors": llm_failures["timeout_errors"],
+                "source_summary_errors": llm_failures["source_summary_errors"],
+                "other_llm_errors": llm_failures["other_llm_errors"],
+                "summary": {
+                    "api_400_count": len(llm_failures["api_400_errors"]),
+                    "rate_limit_count": len(llm_failures["rate_limit_errors"]),
+                    "timeout_count": len(llm_failures["timeout_errors"]),
+                    "source_summary_count": len(llm_failures["source_summary_errors"]),
+                    "other_count": len(llm_failures["other_llm_errors"])
+                }
+            }
         
         # Add extension breakdown
         for file_info in crawlable_files[:processed_files]:
@@ -1780,11 +1874,45 @@ async def crawl_github_repo(
             
         return json.dumps(result, indent=2)
         
+    except subprocess.CalledProcessError as e:
+        return json.dumps({
+            "error": f"Git operation failed: {str(e)}",
+            "error_type": "git_error",
+            "repository": github_url,
+            "crawl_method": "local_clone"
+        })
+    except subprocess.TimeoutExpired as e:
+        return json.dumps({
+            "error": f"Git operation timed out: {str(e)}",
+            "error_type": "timeout_error", 
+            "repository": github_url,
+            "crawl_method": "local_clone"
+        })
+    except PermissionError as e:
+        return json.dumps({
+            "error": f"Permission denied during file operations: {str(e)}",
+            "error_type": "permission_error",
+            "repository": github_url,
+            "crawl_method": "local_clone"
+        })
+    except ValueError as e:
+        return json.dumps({
+            "error": f"Invalid input parameters: {str(e)}",
+            "error_type": "validation_error",
+            "repository": github_url,
+            "crawl_method": "local_clone"
+        })
     except Exception as e:
         return json.dumps({
-            "error": f"Failed to crawl repository: {str(e)}",
-            "repository": github_url
+            "error": f"Unexpected error: {str(e)}",
+            "error_type": "unknown_error",
+            "repository": github_url,
+            "crawl_method": "local_clone"
         })
+    finally:
+        # Always clean up temporary directory
+        if temp_dir:
+            cleanup_temp_directory(temp_dir)
 
 
 async def main():

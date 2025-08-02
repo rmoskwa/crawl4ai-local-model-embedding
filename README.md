@@ -25,6 +25,7 @@ See the [Configuration section](#configuration) below for details on how to enab
 - **Smart URL Detection**: Automatically detects and handles different URL types (regular webpages, sitemaps, text files)
 - **Recursive Crawling**: Follows internal links to discover content
 - **Parallel Processing**: Efficiently crawls multiple pages simultaneously
+- **GitHub Repository Crawling**: Analyze and crawl GitHub repositories, filtering by file extensions and focusing on documentation and code files
 - **Content Chunking**: Intelligently splits content by headers and size for better processing
 - **Vector Search**: Performs RAG over crawled content, optionally filtering by data source for precision
 - **Source Retrieval**: Retrieve sources available for filtering to guide the RAG process
@@ -43,6 +44,12 @@ The server provides essential web crawling and search tools:
 ### Conditional Tools
 
 5. **`search_code_examples`** (requires `USE_AGENTIC_RAG=true`): Search specifically for code examples and their summaries from crawled documentation. This tool provides targeted code snippet retrieval for AI coding assistants.
+
+### GitHub Repository Tools
+
+6. **`analyze_github_repo`**: Analyze a GitHub repository structure and return information about crawlable files, organized by file type and directory. Filters out binary/data files and provides a comprehensive overview of the repository's content structure.
+
+7. **`crawl_github_repo`**: Crawl a GitHub repository and store selected files in the vector database. Supports filtering by file extensions and processes documentation and code files efficiently while ignoring binary files. Ideal for creating searchable knowledge bases from open-source projects.
 
 
 ## Prerequisites

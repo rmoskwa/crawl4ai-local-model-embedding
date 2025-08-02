@@ -4,6 +4,8 @@ create extension if not exists vector;
 -- Drop tables if they exist (to allow rerunning the script)
 drop table if exists crawled_pages;
 drop table if exists code_examples;
+drop table if exists api_reference;
+drop table if exists concepts;
 drop table if exists sources;
 
 -- Create the sources table
@@ -170,6 +172,126 @@ alter table code_examples enable row level security;
 -- Create a policy that allows anyone to read code_examples
 create policy "Allow public read access to code_examples"
   on code_examples
+  for select
+  to public
+  using (true);
+
+-- =================================================================
+-- NEW: api_reference TABLE
+-- =================================================================
+
+-- Create the api_reference table
+create table api_reference (
+    id bigserial primary key,
+    name text not null,
+    language varchar(20) not null,
+    signature text,
+    description text,
+    parameters jsonb,
+    returns text,
+    source_id text,
+    pulseq_version varchar(10),
+    embedding vector(1024),
+    
+    -- Add foreign key constraint to sources table
+    foreign key (source_id) references sources(source_id),
+
+    -- Add a unique constraint to prevent duplicate functions
+    unique(name, language, pulseq_version)
+);
+
+-- Create indexes for the api_reference table
+create index on api_reference using ivfflat (embedding vector_cosine_ops);
+create index idx_api_reference_parameters on api_reference using gin (parameters);
+create index idx_api_reference_source_id on api_reference (source_id);
+
+-- Create a function to search for API references
+create or replace function match_api_reference (
+  query_embedding vector(1024),
+  match_count int default 5
+) returns table (
+  id bigint,
+  name text,
+  language varchar,
+  signature text,
+  description text,
+  parameters jsonb,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select
+    t.id,
+    t.name,
+    t.language,
+    t.signature,
+    t.description,
+    t.parameters,
+    1 - (t.embedding <=> query_embedding) as similarity
+  from api_reference as t
+  order by t.embedding <=> query_embedding
+  limit match_count;
+end;
+$$;
+
+-- Enable RLS and set policy for api_reference table
+alter table api_reference enable row level security;
+create policy "Allow public read access to api_reference"
+  on api_reference
+  for select
+  to public
+  using (true);
+
+
+-- =================================================================
+-- NEW: concepts TABLE
+-- =================================================================
+
+-- Create the concepts table
+create table concepts (
+    id bigserial primary key,
+    concept_name text not null unique,
+    summary text not null,
+    details text,
+    embedding vector(1024)
+);
+
+-- Create an index for vector search on the concepts table
+create index on concepts using ivfflat (embedding vector_cosine_ops);
+
+-- Create a function to search for concepts
+create or replace function match_concepts (
+  query_embedding vector(1024),
+  match_count int default 3
+) returns table (
+  id bigint,
+  concept_name text,
+  summary text,
+  details text,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select
+    t.id,
+    t.concept_name,
+    t.summary,
+    t.details,
+    1 - (t.embedding <=> query_embedding) as similarity
+  from concepts as t
+  order by t.embedding <=> query_embedding
+  limit match_count;
+end;
+$$;
+
+-- Enable RLS and set policy for concepts table
+alter table concepts enable row level security;
+create policy "Allow public read access to concepts"
+  on concepts
   for select
   to public
   using (true);
